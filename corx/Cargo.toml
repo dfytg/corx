@@ -9,6 +9,7 @@ homepage.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+description = "CORS proxy"
 
 [dependencies]
 

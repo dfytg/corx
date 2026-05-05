@@ -9,9 +9,69 @@ homepage.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "CORS proxy"
+description = "High-performance CORS forwarding proxy"
+readme = "../README.md"
+
+[lib]
+name = "corx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "corx"
+path = "src/main.rs"
+
+[features]
+default = []
+tls = ["dep:tokio-rustls", "dep:rustls-pemfile"]
 
 [dependencies]
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+hyper-rustls = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+tokio = { workspace = true }
+
+rustls = { workspace = true }
+rustls-platform-verifier = { workspace = true }
+tokio-rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+
+hickory-resolver = { workspace = true }
+
+url = { workspace = true, features = ["serde"] }
+ipnet = { workspace = true, features = ["serde"] }
+idna = { workspace = true }
+percent-encoding = { workspace = true }
+
+foldhash = { workspace = true }
+
+governor = { workspace = true }
+regex = { workspace = true }
+
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+figment = { workspace = true }
+clap = { workspace = true }
+humantime-serde = { workspace = true }
+
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

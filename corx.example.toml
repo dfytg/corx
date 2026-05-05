@@ -1,0 +1,56 @@
+# corx configuration reference. All fields are required unless marked optional.
+# The effective configuration layers this file, the CORX_* environment variables
+# (double underscores separate nested keys, e.g. CORX_SERVER__BIND=...) and CLI
+# flags, in increasing order of precedence.
+
+[server]
+bind = "0.0.0.0:8080"
+workers = 0                       # 0 = number of CPU cores
+graceful_shutdown = "30s"
+http2 = true
+# [server.tls]
+# cert_path = "/etc/corx/cert.pem"
+# key_path  = "/etc/corx/key.pem"
+
+[limits]
+max_request_body_bytes  = 10_485_760  # 10 MiB
+max_request_header_bytes = 32_768     # 32 KiB
+request_timeout = "60s"
+connect_timeout = "10s"
+max_redirects = 5
+
+[cors]
+policy = "reflect"                 # wildcard | reflect | explicit
+allowlist = []                     # reflect-mode gate, empty = allow-any
+explicit  = []                     # explicit-mode whitelist
+max_age = "600s"
+allow_credentials = false
+
+[security]
+require_header          = ["origin"]
+block_methods           = ["CONNECT", "TRACE"]
+remove_request_headers  = ["cookie", "cookie2"]
+remove_response_headers = ["set-cookie", "set-cookie2"]
+origin_blacklist        = []
+origin_whitelist        = []
+
+[ssrf]
+enabled = true
+extra_blocked_cidrs = []
+allow_ipv6 = true
+
+[rate_limit]
+enabled = false
+per_origin_rps = 10
+burst = 20
+unlimited_hosts = []               # list of regex patterns matched against Origin
+
+[upstream]
+pool_max_idle_per_host = 32
+pool_idle_timeout = "90s"
+user_agent = "corx/0.1.0"
+
+[observability]
+log_format = "json"                # json | pretty
+log_level  = "info"
+metrics_endpoint = "/metrics"

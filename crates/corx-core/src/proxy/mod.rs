@@ -1,6 +1,8 @@
-//! Core forwarding pipeline: URL parsing, CORS shaping, SSRF protection and
-//! upstream execution. This module is framework-agnostic (no `axum`
-//! dependency) so that it can be embedded in alternative HTTP stacks.
+//! Core forwarding pipeline.
+//!
+//! Houses URL parsing, CORS shaping, SSRF protection and upstream
+//! execution. This module is framework-agnostic (no `axum` dependency)
+//! so that it can be embedded in alternative HTTP stacks.
 
 pub mod cors;
 pub mod forwarded;

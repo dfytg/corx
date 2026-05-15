@@ -74,7 +74,7 @@ impl LivePolicies {
             allow_https_to_http_downgrade: config.limits.allow_https_to_http_downgrade,
             user_agent: config.upstream.user_agent.clone(),
         };
-        let upstream = Upstream::new(upstream_config, ssrf)?;
+        let upstream = Upstream::new(upstream_config, ssrf);
 
         let origin_policy = OriginPolicy::from_config(&config.security);
         let rate_limiter = RateLimiter::from_config(&config.rate_limit)?;

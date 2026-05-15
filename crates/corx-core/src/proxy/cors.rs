@@ -181,7 +181,7 @@ pub fn build_preflight_response<B>(req: &Request<B>, policy: &CorsPolicy) -> Res
     // Private Network Access handshake (Chromium et al.).
     if policy.allow_private_network && request_headers.get(&ACR_PRIVATE_NETWORK).is_some() {
         response_headers.insert(
-            ACA_PRIVATE_NETWORK.clone(),
+            ACA_PRIVATE_NETWORK,
             HeaderValue::from_static("true"),
         );
     }
@@ -210,9 +210,11 @@ pub fn apply_to_response<B>(
     }
 }
 
-/// Apply CORS headers to a synthesised error response so cross-origin error
-/// payloads remain visible to the browser. Mirrors [`apply_to_response`] but
-/// is exposed under a distinct name so call sites read clearly.
+/// Apply CORS headers to a synthesised error response.
+///
+/// Keeps cross-origin error payloads visible to the browser. Mirrors
+/// [`apply_to_response`] but is exposed under a distinct name so call
+/// sites read clearly.
 pub fn apply_to_error_response<B>(
     response: &mut Response<B>,
     request_headers: &HeaderMap,
@@ -318,16 +320,16 @@ mod tests {
     }
 
     fn request(
-        method: Method,
+        http_method: Method,
         origin: Option<&str>,
         preflight_method: Option<&str>,
     ) -> Request<()> {
-        let mut builder = Request::builder().method(method).uri("/");
+        let mut builder = Request::builder().method(http_method).uri("/");
         if let Some(origin) = origin {
             builder = builder.header("origin", origin);
         }
-        if let Some(method) = preflight_method {
-            builder = builder.header("access-control-request-method", method);
+        if let Some(preflight) = preflight_method {
+            builder = builder.header("access-control-request-method", preflight);
         }
         builder.body(()).unwrap()
     }
@@ -448,7 +450,7 @@ mod tests {
             allowed_methods: vec!["GET".into()],
             allowed_headers: vec!["content-type".into()],
             exposed_headers: vec![],
-            max_age: std::time::Duration::from_secs(60),
+            max_age: std::time::Duration::from_mins(1),
             allow_credentials: false,
             allow_private_network: true,
         };
@@ -490,7 +492,7 @@ mod tests {
             allowed_methods: vec![],
             allowed_headers: vec![],
             exposed_headers: vec![],
-            max_age: std::time::Duration::from_secs(60),
+            max_age: std::time::Duration::from_mins(1),
             allow_credentials: true,
             allow_private_network: false,
         };

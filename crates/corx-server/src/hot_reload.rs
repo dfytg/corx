@@ -112,8 +112,8 @@ impl ServerBuild {
     #[must_use]
     pub fn hot_reload(&self) -> ReloadHandle {
         ReloadHandle {
-            policies: self.policies.clone(),
-            immutable_server: self.immutable_server.clone(),
+            policies: Arc::clone(&self.policies),
+            immutable_server: Arc::clone(&self.immutable_server),
             immutable_metrics_endpoint: self.immutable_metrics_endpoint.clone(),
             immutable_max_body_bytes: self.immutable_limits.max_request_body_bytes,
             immutable_request_timeout: self.immutable_limits.request_timeout,
@@ -164,7 +164,10 @@ pub async fn watch_sighup(path: Option<PathBuf>, handle: ReloadHandle) {
 
 /// No-op stub for non-Unix targets where SIGHUP does not exist.
 #[cfg(not(unix))]
-#[allow(clippy::unused_async)]
+#[allow(
+    clippy::unused_async,
+    reason = "Signature matches the Unix implementation so callers compile uniformly."
+)]
 pub async fn watch_sighup(_path: Option<PathBuf>, _handle: ReloadHandle) {}
 
 #[cfg(test)]
@@ -172,8 +175,9 @@ mod tests {
     use std::sync::Once;
     use std::time::Duration;
 
-    use super::*;
     use corx_core::config::Config;
+
+    use super::*;
 
     /// `LivePolicies::build` instantiates an [`Upstream`] which in turn
     /// drives `hyper-rustls`. rustls panics if no default crypto provider
@@ -181,7 +185,10 @@ mod tests {
     fn ensure_crypto_provider() {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            let _ = rustls::crypto::ring::default_provider().install_default();
+            // The provider may already have been installed by an earlier
+            // test; either outcome is acceptable so we explicitly discard
+            // the `Result` to satisfy `let_underscore_must_use`.
+            drop(rustls::crypto::ring::default_provider().install_default());
         });
     }
 

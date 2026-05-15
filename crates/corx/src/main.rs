@@ -9,11 +9,13 @@
 //! 5. Assemble proxy dependencies.
 //! 6. Bind the HTTP listener and serve until a shutdown signal arrives.
 
-// Transitive workspace dependencies pulled in via features are not directly
-// named here; silence the `unused_crate_dependencies` lint for those entries.
 #![allow(
     unused_crate_dependencies,
-    reason = "binary only uses the corx-core / corx-server re-exports"
+    clippy::print_stdout,
+    reason = "Transitive workspace dependencies pulled in via features are \
+              not directly named here; the binary only uses the \
+              corx-core / corx-server re-exports. CLI subcommands print \
+              their results to stdout by design."
 )]
 
 mod cli;
@@ -57,7 +59,7 @@ async fn serve(config_path: Option<&Path>) -> anyhow::Result<()> {
     );
 
     let build = ServerBuild::from_config(config.clone(), metrics)?;
-    let ready = build.ready.clone();
+    let ready = std::sync::Arc::clone(&build.ready);
 
     // Hot-reload watcher (Unix only): SIGHUP triggers a fresh load of the
     // same config path. Hot-swappable fields are atomically replaced via
@@ -82,7 +84,11 @@ fn check(config_path: Option<&Path>) -> anyhow::Result<()> {
     println!(
         "config OK \u{2014} bind = {}, tls = {}, ssrf = {:?}",
         config.server.bind,
-        if config.server.tls.is_some() { "on" } else { "off" },
+        if config.server.tls.is_some() {
+            "on"
+        } else {
+            "off"
+        },
         config.ssrf.mode
     );
     Ok(())
@@ -115,7 +121,12 @@ fn print_version() {
 }
 
 const fn active_features() -> &'static str {
-    if cfg!(all(feature = "tls", feature = "mtls", feature = "fips", feature = "otel")) {
+    if cfg!(all(
+        feature = "tls",
+        feature = "mtls",
+        feature = "fips",
+        feature = "otel"
+    )) {
         "tls,mtls,fips,otel"
     } else if cfg!(all(feature = "tls", feature = "mtls", feature = "otel")) {
         "tls,mtls,otel"

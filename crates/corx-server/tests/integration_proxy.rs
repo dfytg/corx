@@ -1,4 +1,17 @@
-//! End-to-end integration tests exercising the full axum router stack.
+#![allow(
+    unused_crate_dependencies,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    clippy::tests_outside_test_module,
+    reason = "Integration-test binaries see every dev-dep of `corx-server` \
+              but only use a handful; cargo's integration test convention \
+              places #[test] functions at the module root rather than \
+              under #[cfg(test)]; unwrap/expect are acceptable test wiring."
+)]
+
+//! End-to-end integration tests for the corx proxy, exercising the full
+//! axum router stack.
 //!
 //! These tests stand up:
 //!
@@ -42,11 +55,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// configuration sets `security.require_header = ["origin"]` to refuse
 /// being addressed as a generic open proxy. Tests that exercise the
 /// require-header policy itself should override the header explicitly.
-fn with_peer(builder: axum::http::request::Builder) -> Request<Body> {
+fn with_peer(builder: http::request::Builder) -> Request<Body> {
     let already_has_origin = builder
         .headers_ref()
-        .map(|h| h.contains_key(header::ORIGIN))
-        .unwrap_or(false);
+        .is_some_and(|h| h.contains_key(header::ORIGIN));
     let builder = if already_has_origin {
         builder
     } else {
@@ -188,7 +200,7 @@ async fn ssrf_blocks_loopback_hostname_when_not_allow_listed() {
     // `localhost` lands in `127.0.0.1` which the default block-list
     // refuses.
     let mock_uri = mock.uri();
-    let mock_port = mock_uri.rsplit_once(':').map(|(_, p)| p).unwrap_or("");
+    let mock_port = mock_uri.rsplit_once(':').map_or("", |(_, p)| p);
     let target = format!("/http://localhost:{mock_port}/x");
     let response = router
         .oneshot(with_peer(Request::builder().uri(target)))
@@ -200,10 +212,7 @@ async fn ssrf_blocks_loopback_hostname_when_not_allow_listed() {
     // remained (HTTP 502). Both outcomes mean the proxy refused to
     // contact the loopback target, which is what the test verifies.
     assert!(
-        matches!(
-            status,
-            StatusCode::FORBIDDEN | StatusCode::BAD_GATEWAY,
-        ),
+        matches!(status, StatusCode::FORBIDDEN | StatusCode::BAD_GATEWAY,),
         "expected 403/502 for blocked loopback hostname, got {status}",
     );
 }

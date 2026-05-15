@@ -12,18 +12,17 @@ use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use corx_core::config::{
+    GlobalLimitConfig, HostLimitConfig, IpLimitConfig, OriginLimitConfig, RateLimitConfig,
+};
+use corx_core::error::ProxyError;
+use corx_core::observability;
 use governor::clock::QuantaClock;
 use governor::state::keyed::DashMapStateStore;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter as GovRateLimiter};
 use ipnet::IpNet;
 use regex::RegexSet;
-
-use corx_core::config::{
-    GlobalLimitConfig, HostLimitConfig, IpLimitConfig, OriginLimitConfig, RateLimitConfig,
-};
-use corx_core::error::ProxyError;
-use corx_core::observability;
 
 type KeyedLimiter<K> = GovRateLimiter<K, DashMapStateStore<K>, QuantaClock>;
 type DirectLimiter = GovRateLimiter<NotKeyed, InMemoryState, QuantaClock>;
@@ -101,7 +100,7 @@ impl RateLimiter {
 
         let origin = build_origin(&cfg.origin)?;
         let ip = build_ip(&cfg.ip)?;
-        let host = build_host(&cfg.target_host)?;
+        let host = build_host(cfg.target_host)?;
         let global = build_global(&cfg.global)?;
 
         Ok(Self {
@@ -196,7 +195,7 @@ fn build_ip(cfg: &IpLimitConfig) -> anyhow::Result<Option<IpDimension>> {
     }))
 }
 
-fn build_host(cfg: &HostLimitConfig) -> anyhow::Result<Option<HostDimension>> {
+fn build_host(cfg: HostLimitConfig) -> anyhow::Result<Option<HostDimension>> {
     if cfg.rps == 0 {
         return Ok(None);
     }
@@ -267,7 +266,10 @@ mod tests {
         c.enabled = false;
         let lim = RateLimiter::from_config(&c).unwrap();
         for _ in 0..100 {
-            assert!(lim.check(&ctx(Some("https://a.test"), "1.2.3.4", "x.test")).is_ok());
+            assert!(
+                lim.check(&ctx(Some("https://a.test"), "1.2.3.4", "x.test"))
+                    .is_ok()
+            );
         }
     }
 
@@ -277,9 +279,18 @@ mod tests {
         c.origin.rps = 1;
         c.origin.burst = 2;
         let lim = RateLimiter::from_config(&c).unwrap();
-        assert!(lim.check(&ctx(Some("https://a.test"), "1.2.3.4", "x.test")).is_ok());
-        assert!(lim.check(&ctx(Some("https://a.test"), "1.2.3.4", "x.test")).is_ok());
-        assert!(lim.check(&ctx(Some("https://a.test"), "1.2.3.4", "x.test")).is_err());
+        assert!(
+            lim.check(&ctx(Some("https://a.test"), "1.2.3.4", "x.test"))
+                .is_ok()
+        );
+        assert!(
+            lim.check(&ctx(Some("https://a.test"), "1.2.3.4", "x.test"))
+                .is_ok()
+        );
+        assert!(
+            lim.check(&ctx(Some("https://a.test"), "1.2.3.4", "x.test"))
+                .is_err()
+        );
     }
 
     #[test]

@@ -10,10 +10,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Buf;
+use corx_core::observability::BYTES_TRANSFERRED;
 use http_body::{Body, Frame, SizeHint};
 use pin_project_lite::pin_project;
-
-use corx_core::observability::BYTES_TRANSFERRED;
 
 pin_project! {
     /// Wraps a [`Body`] and increments the
@@ -49,19 +48,17 @@ where
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.project();
         let direction = *this.direction;
-        match this.inner.poll_frame(cx) {
-            Poll::Ready(Some(Ok(frame))) => {
-                if let Some(data) = frame.data_ref() {
-                    let bytes = u64::try_from(data.remaining()).unwrap_or(u64::MAX);
-                    if bytes > 0 {
-                        metrics::counter!(BYTES_TRANSFERRED, "direction" => direction)
-                            .increment(bytes);
-                    }
-                }
-                Poll::Ready(Some(Ok(frame)))
+        let polled = this.inner.poll_frame(cx);
+        let Poll::Ready(Some(Ok(frame))) = polled else {
+            return polled;
+        };
+        if let Some(data) = frame.data_ref() {
+            let bytes = u64::try_from(data.remaining()).unwrap_or(u64::MAX);
+            if bytes > 0 {
+                metrics::counter!(BYTES_TRANSFERRED, "direction" => direction).increment(bytes);
             }
-            other => other,
         }
+        Poll::Ready(Some(Ok(frame)))
     }
 
     fn is_end_stream(&self) -> bool {

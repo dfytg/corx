@@ -102,8 +102,8 @@ mod tests {
 
     use super::OriginPolicy;
 
-    fn make(cfg: SecurityConfig) -> OriginPolicy {
-        OriginPolicy::from_config(&cfg)
+    fn make(cfg: &SecurityConfig) -> OriginPolicy {
+        OriginPolicy::from_config(cfg)
     }
 
     fn headers(origin: Option<&str>) -> HeaderMap {
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn blacklist_blocks_origin() {
-        let policy = make(SecurityConfig {
+        let policy = make(&SecurityConfig {
             require_header: vec![],
             block_methods: vec![],
             remove_request_headers: vec![],
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn whitelist_gates_origin() {
-        let policy = make(SecurityConfig {
+        let policy = make(&SecurityConfig {
             require_header: vec![],
             block_methods: vec![],
             remove_request_headers: vec![],
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn blocked_method_is_rejected() {
-        let policy = make(SecurityConfig {
+        let policy = make(&SecurityConfig {
             require_header: vec![],
             block_methods: vec!["CONNECT".into()],
             remove_request_headers: vec![],
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn required_header_must_be_present() {
-        let policy = make(SecurityConfig {
+        let policy = make(&SecurityConfig {
             require_header: vec!["origin".into(), "x-requested-with".into()],
             block_methods: vec![],
             remove_request_headers: vec![],
@@ -185,3 +185,4 @@ mod tests {
         );
     }
 }
+

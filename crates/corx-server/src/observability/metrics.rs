@@ -34,7 +34,10 @@ impl MetricsHandle {
     /// Returns the empty string when running under the test-only stub.
     #[must_use]
     pub fn render(&self) -> String {
-        self.inner.as_ref().map(PrometheusHandle::render).unwrap_or_default()
+        self.inner
+            .as_ref()
+            .map(PrometheusHandle::render)
+            .unwrap_or_default()
     }
 
     /// Test-only constructor that skips global recorder registration so
@@ -42,7 +45,7 @@ impl MetricsHandle {
     /// [`crate::ServerBuild`] without conflicting on the
     /// process-wide `metrics` recorder slot.
     #[must_use]
-    pub fn for_test() -> Self {
+    pub const fn for_test() -> Self {
         Self { inner: None }
     }
 }
@@ -166,9 +169,14 @@ pub fn init_metrics() -> anyhow::Result<MetricsHandle> {
     })
 }
 
-fn active_features() -> &'static str {
+const fn active_features() -> &'static str {
     // Keep the result static; cardinality stays low.
-    if cfg!(all(feature = "tls", feature = "mtls", feature = "fips", feature = "otel")) {
+    if cfg!(all(
+        feature = "tls",
+        feature = "mtls",
+        feature = "fips",
+        feature = "otel"
+    )) {
         "tls,mtls,fips,otel"
     } else if cfg!(all(feature = "tls", feature = "mtls", feature = "otel")) {
         "tls,mtls,otel"

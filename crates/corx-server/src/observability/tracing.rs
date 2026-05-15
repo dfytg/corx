@@ -1,7 +1,7 @@
 //! `tracing` subscriber bootstrap.
 //!
-//! When the `otel` Cargo feature is on and `observability.otel.enabled = true`, 
-//! an OpenTelemetry / OTLP layer is spliced into the same registry so application 
+//! When the `otel` Cargo feature is on and `observability.otel.enabled = true`,
+//! an OpenTelemetry / OTLP layer is spliced into the same registry so application
 //! logs and distributed traces share the same context.
 
 use corx_core::config::{LogFormat, ObservabilityConfig};

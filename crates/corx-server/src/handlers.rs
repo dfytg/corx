@@ -211,12 +211,8 @@ async fn execute_proxy(
         host: inbound_host.as_deref(),
         local_port,
     };
-    proxy::inject_forwarded(
-        &mut parts.headers,
-        inbound,
-        &target,
-        &policies.config.forwarded,
-    );
+    let forwarded_cfg = policies.config.forwarded;
+    proxy::inject_forwarded(&mut parts.headers, inbound, &target, forwarded_cfg);
 
     inject_default_user_agent(&mut parts.headers, policies.upstream.user_agent());
     set_host_from_target(&mut parts.headers, &target);
@@ -243,7 +239,7 @@ async fn execute_proxy(
     )
     .record(upstream_elapsed);
 
-    shape_response(response, &state, &target, &inbound_headers)
+    Ok(shape_response(response, &state, &target, &inbound_headers))
 }
 
 fn shape_response(
@@ -251,27 +247,27 @@ fn shape_response(
     state: &AppState,
     target: &TargetUrl,
     request_headers: &HeaderMap,
-) -> Result<Response, ServerError> {
+) -> Response {
     let policies = state.build.policies();
 
-    let (mut parts, body) = response.into_parts();
-    policies.response_filter.apply(&mut parts.headers);
+    let (mut response_parts, response_body) = response.into_parts();
+    policies.response_filter.apply(&mut response_parts.headers);
 
     // Advertise the final URL and our presence in the via chain.
     if let Ok(value) = HeaderValue::from_str(target.url.as_str()) {
-        parts.headers.insert(EXPOSE_URL_HEADER, value);
+        response_parts.headers.insert(EXPOSE_URL_HEADER, value);
     }
-    append_via_header(&mut parts.headers);
+    append_via_header(&mut response_parts.headers);
 
-    let mut reassembled = hyper::Response::from_parts(parts, body);
+    let mut reassembled = hyper::Response::from_parts(response_parts, response_body);
 
     // Apply CORS last so its headers win on collisions.
     proxy::apply_to_response(&mut reassembled, request_headers, policies.cors.as_ref());
 
-    let (parts, body) = reassembled.into_parts();
-    let counted = CountingBody::new(body, "response");
+    let (final_parts, final_body) = reassembled.into_parts();
+    let counted = CountingBody::new(final_body, "response");
     let axum_body = AxumBody::new(counted.map_err(axum::Error::new));
-    Ok(Response::from_parts(parts, axum_body))
+    Response::from_parts(final_parts, axum_body)
 }
 
 fn inject_default_user_agent(headers: &mut HeaderMap, default_ua: &str) {
@@ -295,13 +291,15 @@ fn set_host_from_target(headers: &mut HeaderMap, target: &TargetUrl) {
 
 fn append_via_header(headers: &mut HeaderMap) {
     let header_name = header::VIA;
-    let new_value = match headers.get(&header_name) {
-        Some(existing) => match existing.to_str() {
-            Ok(s) => format!("{s}, {VIA_HEADER_VALUE}"),
-            Err(_) => VIA_HEADER_VALUE.to_owned(),
+    let new_value = headers.get(&header_name).map_or_else(
+        || VIA_HEADER_VALUE.to_owned(),
+        |existing| {
+            existing.to_str().map_or_else(
+                |_| VIA_HEADER_VALUE.to_owned(),
+                |s| format!("{s}, {VIA_HEADER_VALUE}"),
+            )
         },
-        None => VIA_HEADER_VALUE.to_owned(),
-    };
+    );
     if let Ok(value) = HeaderValue::from_str(&new_value) {
         headers.insert(header_name, value);
     }

@@ -16,9 +16,8 @@ use std::sync::atomic::Ordering;
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use http::{HeaderValue, StatusCode, header};
-
 use corx_core::observability;
+use http::{HeaderValue, StatusCode, header};
 
 use crate::router::AppState;
 
@@ -28,15 +27,7 @@ pub async fn load_shed_layer(
     request: Request,
     next: Next,
 ) -> Response {
-    let max = u64::from(
-        state
-            .build
-            .policies()
-            .config
-            .rate_limit
-            .global
-            .inflight_max,
-    );
+    let max = u64::from(state.build.policies().config.rate_limit.global.inflight_max);
     if max == 0 {
         return next.run(request).await;
     }

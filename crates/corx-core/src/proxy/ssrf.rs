@@ -125,11 +125,11 @@ impl SsrfGuard {
     /// are folded back to plain IPv4 so that policy checks compare the same
     /// underlying value regardless of how the upstream announced it.
     #[must_use]
-    pub fn canonicalise(addr: IpAddr) -> IpAddr {
+    pub const fn canonicalise(addr: IpAddr) -> IpAddr {
         match addr {
             IpAddr::V6(v6) => {
-                let canonical = v6.to_canonical();
-                IpAddr::from(canonical)
+                
+                v6.to_canonical()
             }
             IpAddr::V4(_) => addr,
         }

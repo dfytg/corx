@@ -1,3 +1,14 @@
+#![allow(
+    unused_crate_dependencies,
+    missing_docs,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    reason = "Bench binaries inherit every dev-dep of `corx-core` but only \
+              use a handful; `criterion_group!` expands to undocumented \
+              items; bench wiring is allowed to unwrap/expect freely."
+)]
+
 //! Microbenchmarks for `corx_core::proxy::extract_target`.
 //!
 //! `extract_target` runs on every request that reaches the proxy fallback
@@ -19,10 +30,7 @@ fn bench_extract_target(c: &mut Criterion) {
             "query_string_form",
             "/?url=https%3A%2F%2Fapi.example.com%2Fv1%2Fitems",
         ),
-        (
-            "punycode_idn",
-            "/https://xn--80ak6aa92e.example.com/path",
-        ),
+        ("punycode_idn", "/https://xn--80ak6aa92e.example.com/path"),
         (
             "deep_path",
             "/https://example.com/a/b/c/d/e/f/g/h/i/j?token=deadbeef&page=7",

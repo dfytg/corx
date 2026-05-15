@@ -22,6 +22,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::connect::dns::Name;
 use hyper_util::rt::TokioExecutor;
+use rustls_platform_verifier::ConfigVerifierExt as _;
 use tower::Service;
 
 use crate::error::ProxyError;
@@ -77,12 +78,10 @@ impl Upstream {
     ///
     /// The supplied [`SsrfGuard`] is consulted inside the DNS resolver used
     /// by this client: no upstream connection is made to an address that
-    /// violates SSRF policy.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the platform TLS verifier cannot be obtained.
-    pub fn new(config: UpstreamConfig, guard: SsrfGuard) -> anyhow::Result<Self> {
+    /// violates SSRF policy. The platform TLS verifier is loaded lazily by
+    /// `rustls-platform-verifier`; construction itself is infallible.
+    #[must_use]
+    pub fn new(config: UpstreamConfig, guard: SsrfGuard) -> Self {
         let guard = Arc::new(guard);
 
         let mut http = HttpConnector::new_with_resolver(GuardedResolver {
@@ -93,9 +92,7 @@ impl Upstream {
         http.set_nodelay(true);
         http.set_keepalive(Some(Duration::from_secs(30)));
 
-        use rustls_platform_verifier::ConfigVerifierExt as _;
         let tls_config = rustls::ClientConfig::with_platform_verifier();
-
         let https = HttpsConnectorBuilder::new()
             .with_tls_config(tls_config)
             .https_or_http()
@@ -108,11 +105,11 @@ impl Upstream {
             .pool_idle_timeout(config.pool_idle_timeout)
             .build::<_, UpstreamBody>(https);
 
-        Ok(Self {
+        Self {
             client,
             guard,
             config: Arc::new(config),
-        })
+        }
     }
 
     /// Executes a request against the upstream, following redirects up to
@@ -131,9 +128,7 @@ impl Upstream {
         let (mut state, first_request) = split_initial(request);
         let target_host = state
             .uri
-            .host()
-            .map(str::to_owned)
-            .unwrap_or_else(|| "unknown".to_owned());
+            .host().map_or_else(|| "unknown".to_owned(), str::to_owned);
         let mut hops: u8 = 0;
         let mut next_request = first_request;
 
@@ -157,7 +152,7 @@ impl Upstream {
             }
             match redirect::prepare_next(&mut state, &response, allow_downgrade)? {
                 NextHop::Continue(req) => {
-                    next_request = req;
+                    next_request = *req;
                     hops = hops.saturating_add(1);
                 }
                 NextHop::Stop(reason) => {

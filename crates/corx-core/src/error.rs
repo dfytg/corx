@@ -62,8 +62,9 @@ impl ErrorKind {
         match self {
             Self::InvalidUrl | Self::MissingRequiredHeader => StatusCode::BAD_REQUEST,
             Self::OriginNotAllowed | Self::SsrfBlocked => StatusCode::FORBIDDEN,
-            Self::DnsFailure => StatusCode::BAD_GATEWAY,
-            Self::UpstreamUnreachable | Self::TlsFailure => StatusCode::BAD_GATEWAY,
+            Self::DnsFailure | Self::UpstreamUnreachable | Self::TlsFailure => {
+                StatusCode::BAD_GATEWAY
+            }
             Self::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
             Self::TooManyRedirects => StatusCode::LOOP_DETECTED,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,

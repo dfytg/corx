@@ -1,3 +1,12 @@
+#![allow(
+    unused_crate_dependencies,
+    missing_docs,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    reason = "See the sibling `url_parser.rs` bench for the rationale."
+)]
+
 //! Microbenchmark for `SsrfGuard::check_ip`.
 //!
 //! The guard runs synchronously inside the hyper resolver path, so its
@@ -34,8 +43,14 @@ fn bench_check_ip(c: &mut Criterion) {
     let cases: &[(&str, IpAddr)] = &[
         ("public_ipv4", IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))),
         ("loopback_ipv4", IpAddr::V4(Ipv4Addr::LOCALHOST)),
-        ("link_local_ipv4", IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))),
-        ("public_ipv6", IpAddr::V6("2606:4700:4700::1111".parse().unwrap())),
+        (
+            "link_local_ipv4",
+            IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+        ),
+        (
+            "public_ipv6",
+            IpAddr::V6("2606:4700:4700::1111".parse().unwrap()),
+        ),
         ("loopback_ipv6", IpAddr::V6(Ipv6Addr::LOCALHOST)),
     ];
 

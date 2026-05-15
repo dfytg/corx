@@ -71,10 +71,14 @@ pub const fn is_redirect(status: StatusCode) -> bool {
 }
 
 /// Result of consulting the redirect machinery for the next hop.
+///
+/// `Continue` boxes its payload so the discriminant + `Stop` arm stay
+/// pointer-sized; otherwise the (large) `Request` body would bloat every
+/// stack frame that returns a `NextHop`.
 #[derive(Debug)]
 pub enum NextHop {
     /// Continue following with this freshly-built request.
-    Continue(Request<UpstreamBody>),
+    Continue(Box<Request<UpstreamBody>>),
     /// Stop following and return the original 3xx response to the client.
     /// `reason` is logged but not exposed on the wire.
     Stop(&'static str),
@@ -138,7 +142,7 @@ pub fn prepare_next(
 
     builder
         .body(body)
-        .map(NextHop::Continue)
+        .map(|req| NextHop::Continue(Box::new(req)))
         .map_err(|err| ProxyError::InvalidUrl(format!("cannot build redirect request: {err}")))
 }
 

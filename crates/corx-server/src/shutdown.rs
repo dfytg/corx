@@ -7,10 +7,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::Router;
+use corx_core::config::ServerConfig;
 use tokio::net::TcpListener;
 use tokio::signal;
-
-use corx_core::config::ServerConfig;
 
 /// Binds to the configured socket and serves the supplied router until a
 /// shutdown signal is received, then drains in-flight connections within
@@ -65,6 +64,11 @@ async fn run_tls(
 }
 
 #[cfg(not(feature = "tls"))]
+#[allow(
+    clippy::unused_async,
+    reason = "Signature mirrors the `tls`-feature variant so the calling \
+              code path stays identical regardless of build features."
+)]
 async fn run_tls(
     _cfg: &ServerConfig,
     _tls_cfg: &corx_core::config::TlsConfig,

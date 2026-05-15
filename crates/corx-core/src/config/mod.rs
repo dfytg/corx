@@ -266,7 +266,7 @@ pub enum SsrfMode {
 impl SsrfMode {
     /// Returns `true` when the policy is allowed to admit private IPs.
     #[must_use]
-    pub const fn admits_private(&self) -> bool {
+    pub const fn admits_private(self) -> bool {
         matches!(
             self,
             Self::Permissive {
@@ -333,6 +333,7 @@ pub struct RateLimitConfig {
 /// Per-`Origin` rate-limit configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct OriginLimitConfig {
     /// Steady-state requests-per-second; `0` disables this dimension.
     #[serde(default)]
@@ -346,19 +347,11 @@ pub struct OriginLimitConfig {
     pub unlimited_patterns: Vec<String>,
 }
 
-impl Default for OriginLimitConfig {
-    fn default() -> Self {
-        Self {
-            rps: 0,
-            burst: 0,
-            unlimited_patterns: Vec::new(),
-        }
-    }
-}
 
 /// Per-client-IP rate-limit configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct IpLimitConfig {
     /// Steady-state requests-per-second; `0` disables this dimension.
     #[serde(default)]
@@ -372,19 +365,11 @@ pub struct IpLimitConfig {
     pub trusted_cidrs: Vec<IpNet>,
 }
 
-impl Default for IpLimitConfig {
-    fn default() -> Self {
-        Self {
-            rps: 0,
-            burst: 0,
-            trusted_cidrs: Vec::new(),
-        }
-    }
-}
 
 /// Per-target-host rate-limit configuration.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct HostLimitConfig {
     /// Steady-state requests-per-second; `0` disables this dimension.
     #[serde(default)]
@@ -394,15 +379,11 @@ pub struct HostLimitConfig {
     pub burst: u32,
 }
 
-impl Default for HostLimitConfig {
-    fn default() -> Self {
-        Self { rps: 0, burst: 0 }
-    }
-}
 
 /// Process-wide global limits that drive the load-shed layer.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct GlobalLimitConfig {
     /// Steady-state requests-per-second across the entire proxy. `0`
     /// disables the global token bucket.
@@ -418,15 +399,6 @@ pub struct GlobalLimitConfig {
     pub inflight_max: u32,
 }
 
-impl Default for GlobalLimitConfig {
-    fn default() -> Self {
-        Self {
-            rps: 0,
-            burst: 0,
-            inflight_max: 0,
-        }
-    }
-}
 
 /// Upstream HTTP client tuning.
 #[derive(Debug, Clone, Deserialize, Serialize)]

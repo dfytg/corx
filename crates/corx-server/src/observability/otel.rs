@@ -10,6 +10,7 @@
 //! endpoint.
 
 use anyhow::Context as _;
+use corx_core::config::{OtelConfig, OtelProtocol};
 use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
@@ -18,8 +19,6 @@ use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::runtime::Tokio;
 use opentelemetry_sdk::trace::{Sampler, Tracer, TracerProvider};
-
-use corx_core::config::{OtelConfig, OtelProtocol};
 
 /// Build the SDK tracer that backs `tracing-opentelemetry`'s layer.
 ///
@@ -61,9 +60,7 @@ pub fn build_tracer(cfg: &OtelConfig) -> anyhow::Result<Option<Tracer>> {
     let provider = TracerProvider::builder()
         .with_batch_exporter(exporter, Tokio)
         .with_resource(build_resource(cfg))
-        .with_sampler(Sampler::TraceIdRatioBased(
-            cfg.sample_ratio.clamp(0.0, 1.0),
-        ))
+        .with_sampler(Sampler::TraceIdRatioBased(cfg.sample_ratio.clamp(0.0, 1.0)))
         .build();
 
     let tracer = provider.tracer("corx");

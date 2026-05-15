@@ -14,6 +14,12 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+// `criterion` is a dev-dependency consumed only by the benches under
+// `benches/`. Without this anchoring import the workspace lint
+// `unused_crate_dependencies` flags the crate against `lib.rs`.
+#[cfg(test)]
+use criterion as _;
+
 pub mod config;
 pub mod error;
 pub mod observability;

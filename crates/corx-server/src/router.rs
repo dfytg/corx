@@ -32,7 +32,6 @@ impl AppState {
 }
 
 /// Builds the `axum` router with every middleware layer registered.
-#[must_use]
 pub fn build_router(state: AppState) -> Router<()> {
     // Body size and timeout are baked into the router at startup; they
     // come from the immutable snapshot for the same reason a SIGHUP reload

@@ -56,7 +56,7 @@ pub fn inject(
     headers: &mut HeaderMap,
     inbound: InboundContext<'_>,
     target: &TargetUrl,
-    cfg: &ForwardedConfig,
+    cfg: ForwardedConfig,
 ) {
     if cfg.inject_request_id {
         ensure_request_id(headers);
@@ -98,13 +98,14 @@ fn ensure_request_id(headers: &mut HeaderMap) {
 }
 
 fn append_xff(headers: &mut HeaderMap, client: IpAddr) {
-    let appended = match headers.get(&X_FORWARDED_FOR) {
-        Some(existing) => match existing.to_str() {
-            Ok(prev) => format!("{prev}, {client}"),
-            Err(_) => client.to_string(),
+    let appended = headers.get(&X_FORWARDED_FOR).map_or_else(
+        || client.to_string(),
+        |existing| {
+            existing
+                .to_str()
+                .map_or_else(|_| client.to_string(), |prev| format!("{prev}, {client}"))
         },
-        None => client.to_string(),
-    };
+    );
     if let Ok(value) = HeaderValue::from_str(&appended) {
         headers.insert(X_FORWARDED_FOR, value);
     }
@@ -172,7 +173,7 @@ mod tests {
             host: Some("proxy.example"),
             local_port: 8080,
         };
-        inject(&mut headers, inbound, &target(), &cfg());
+        inject(&mut headers, inbound, &target(), cfg());
         assert_eq!(headers.get("x-forwarded-for").unwrap(), "203.0.113.5");
         assert_eq!(headers.get("x-forwarded-proto").unwrap(), "https");
         assert_eq!(headers.get("x-forwarded-host").unwrap(), "proxy.example");
@@ -193,7 +194,7 @@ mod tests {
             host: None,
             local_port: 80,
         };
-        inject(&mut headers, inbound, &target(), &cfg());
+        inject(&mut headers, inbound, &target(), cfg());
         assert_eq!(headers.get("x-forwarded-for").unwrap(), "203.0.113.5");
     }
 
@@ -209,7 +210,7 @@ mod tests {
         };
         let mut cfg = cfg();
         cfg.trust_inbound_xff = true;
-        inject(&mut headers, inbound, &target(), &cfg);
+        inject(&mut headers, inbound, &target(), cfg);
         assert_eq!(
             headers.get("x-forwarded-for").unwrap(),
             "1.2.3.4, 203.0.113.5"
@@ -225,7 +226,7 @@ mod tests {
             host: None,
             local_port: 443,
         };
-        inject(&mut headers, inbound, &target(), &cfg());
+        inject(&mut headers, inbound, &target(), cfg());
         let id = headers.get(REQUEST_ID_HEADER).unwrap().to_str().unwrap();
         // UUID v7 is 36 characters long, dash-separated.
         assert_eq!(id.len(), 36);
@@ -242,7 +243,7 @@ mod tests {
             host: None,
             local_port: 443,
         };
-        inject(&mut headers, inbound, &target(), &cfg());
+        inject(&mut headers, inbound, &target(), cfg());
         assert_eq!(headers.get("x-request-id").unwrap(), "client-supplied");
     }
 }

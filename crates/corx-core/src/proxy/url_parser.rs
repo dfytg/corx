@@ -46,10 +46,10 @@ impl TargetUrl {
         let pq = PathAndQuery::try_from(path_and_query)
             .map_err(|err| ProxyError::InvalidUrl(format!("invalid path/query: {err}")))?;
 
-        let authority = match self.url.port() {
-            Some(port) => format!("{}:{port}", self.host),
-            None => self.host.clone(),
-        };
+        let authority = self
+            .url
+            .port()
+            .map_or_else(|| self.host.clone(), |port| format!("{}:{port}", self.host));
 
         Uri::builder()
             .scheme(self.url.scheme())
@@ -92,11 +92,9 @@ fn candidate_from_uri(uri: &Uri) -> Result<String, ProxyError> {
     if trimmed.is_empty() {
         return Err(ProxyError::InvalidUrl("no target url supplied".to_owned()));
     }
-    if let Some(query) = uri.query() {
-        Ok(format!("{trimmed}?{query}"))
-    } else {
-        Ok(trimmed.to_owned())
-    }
+    Ok(uri
+        .query()
+        .map_or_else(|| trimmed.to_owned(), |q| format!("{trimmed}?{q}")))
 }
 
 fn find_query_value<'a>(query: &'a str, key: &str) -> Option<&'a str> {
@@ -121,14 +119,14 @@ fn normalize_scheme(raw: &str) -> Result<String, ProxyError> {
     // No scheme: replicate cors-anywhere behaviour — port 443 implies https.
     let host_part = raw.split('/').next().unwrap_or(raw);
     let scheme = match host_part.rsplit_once(':') {
-        Some((_, port)) if port == "443" => "https",
+        Some((_, "443")) => "https",
         _ => "http",
     };
     Ok(format!("{scheme}://{raw}"))
 }
 
 /// Maximum length, in bytes, of a punycode-encoded hostname. Longer hosts
-/// are rejected to defend against punycode-expansion DoS.
+/// are rejected to defend against punycode-expansion `DoS`.
 const MAX_HOST_LEN: usize = 253;
 
 fn validate(mut parsed: Url) -> Result<TargetUrl, ProxyError> {

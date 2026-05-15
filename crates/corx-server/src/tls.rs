@@ -22,11 +22,10 @@ use anyhow::Context as _;
 use axum::Router;
 use axum_server::Handle;
 use axum_server::tls_rustls::RustlsConfig;
+use corx_core::config::{ServerConfig as ProxyServerConfig, TlsConfig};
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls_pemfile::{certs, private_key};
-
-use corx_core::config::{ServerConfig as ProxyServerConfig, TlsConfig};
 
 /// Compile a [`rustls::ServerConfig`] from the operator-provided settings.
 ///
@@ -36,9 +35,8 @@ use corx_core::config::{ServerConfig as ProxyServerConfig, TlsConfig};
 /// parsed, if the ALPN list is malformed, or \u2014 when an mTLS trust anchor
 /// path is supplied \u2014 if its certificates fail to load.
 pub fn build_server_config(cfg: &TlsConfig) -> anyhow::Result<Arc<ServerConfig>> {
-    let cert_chain = load_certs(&cfg.cert_path).with_context(|| {
-        format!("loading certificate chain from {}", cfg.cert_path.display())
-    })?;
+    let cert_chain = load_certs(&cfg.cert_path)
+        .with_context(|| format!("loading certificate chain from {}", cfg.cert_path.display()))?;
     let key = load_private_key(&cfg.key_path)
         .with_context(|| format!("loading private key from {}", cfg.key_path.display()))?;
 
@@ -97,10 +95,7 @@ fn load_certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
     let mut reader = BufReader::new(file);
     let chain: Vec<CertificateDer<'static>> = certs(&mut reader).collect::<Result<_, _>>()?;
     if chain.is_empty() {
-        anyhow::bail!(
-            "no PEM-encoded certificates found in {}",
-            path.display()
-        );
+        anyhow::bail!("no PEM-encoded certificates found in {}", path.display());
     }
     Ok(chain)
 }
@@ -108,9 +103,8 @@ fn load_certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
 fn load_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
     let file = std::fs::File::open(path)?;
     let mut reader = BufReader::new(file);
-    private_key(&mut reader)?.ok_or_else(|| {
-        anyhow::anyhow!("no PEM-encoded private key found in {}", path.display())
-    })
+    private_key(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("no PEM-encoded private key found in {}", path.display()))
 }
 
 /// Bind to `cfg.bind`, terminate TLS in-process, and serve `router` over

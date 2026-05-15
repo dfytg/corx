@@ -1,33 +1,67 @@
-docs(release): land M7 quality bar (integration tests + benches + docs + CHANGELOG)
+style(workspace): zero out clippy `-D warnings` across all targets and features
 
-* Integration tests: new `crates/corx-server/tests/integration_proxy.rs`
-  drives a fully assembled `axum` router against a `wiremock` upstream
-  via `tower::ServiceExt::oneshot`. Coverage spans liveness/readiness,
-  CORS preflight short-circuit, end-to-end body forwarding, hostname
-  SSRF blocking, origin denial and forwarded-header injection. The
-  `MetricsHandle` now exposes `for_test()` so multiple test cases can
-  spin up fresh `ServerBuild`s without conflicting on the
-  process-wide `metrics` recorder.
-* Criterion benchmarks: `crates/corx-core/benches/url_parser.rs` and
-  `crates/corx-core/benches/ssrf_guard.rs` cover the two hot-path
-  primitives (URL extraction, IP literal SSRF check) so a regression
-  shows up as a clear percentage delta.
-* Documentation set under `docs/`:
-  - `getting-started.md` -- install + first request walkthrough.
-  - `configuration.md` -- TOML schema + hot-swappable vs immutable.
-  - `security.md` -- defence-in-depth diagram + SSRF / CORS / mTLS.
-  - `observability.md` -- log fields, full Prometheus catalogue, OTLP.
-  - `operations.md` -- probes, signals, hot reload, capacity knobs.
-  - `deployment.md` -- Docker / compose / Helm / TLS / FIPS / CI.
-  - `architecture.md` -- workspace layout + request lifecycle diagram.
-  - `migration.md` -- breaking-change guide for 0.1 -> 0.2.
-  - `testing.md` -- unit + integration + criterion + lint commands.
-  - `README.md` -- index across all of the above.
-* `CHANGELOG.md` documents every M1-M7 deliverable and the breaking
-  changes that come with the workspace split.
-* Top-level `README.md` reshaped: highlights now reflect the
-  enterprise feature set, CLI subcommands documented, doc table links
-  out to the new operator guides.
+Sweep every clippy lint surfaced by the workspace-strict
+`pedantic` / `nursery` / `cargo` groups plus the project-specific
+restrictions (`unwrap_used`, `expect_used`, `clone_on_ref_ptr`,
+`option_if_let_else`, `shadow_unrelated`, `large_enum_variant`,
+`allow_attributes_without_reason`, ...). Both
+`cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`
+now exit clean.
 
-80 tests passing across the workspace under `--all-features`
-(56 corx-core unit + 17 corx-server unit + 7 integration).
+Code-level fixes:
+* `corx-core::config::SsrfMode::admits_private` takes `self` by value
+  (it is `Copy`).
+* `corx-core::error::ErrorKind::status` merges three arms that all
+  map to `BAD_GATEWAY`.
+* `corx-core::proxy::mod` and `cors::apply_to_error_response` doc
+  comments split their long first paragraph.
+* `corx-core::proxy::cors::request` test helper renames the
+  parameters that shadowed the outer `method` binding.
+* `corx-core::proxy::forwarded::inject` takes `ForwardedConfig` by
+  value; the surrounding `append_xff` helper uses `map_or_else`
+  instead of nested `match`. All test sites and `corx-server`
+  handlers updated.
+* `corx-core::proxy::redirect::NextHop::Continue` now boxes its
+  `Request` payload to keep the enum discriminant pointer-sized;
+  the single call site in `Upstream::execute` dereferences the box.
+* `corx-core::proxy::upstream::Upstream::new` is now infallible
+  (`-> Self`), the `rustls-platform-verifier` import lives at the
+  module top, and `ServerBuild::from_config` no longer propagates a
+  redundant `?`.
+* `corx-core::proxy::url_parser` flips the URL-construction helpers
+  to `Option::map_or_else` and drops a redundant equality guard.
+* `corx-server::handlers::shape_response` returns `Response`
+  directly (no needless `Result` wrap); `parts` / `body` bindings
+  renamed to avoid shadowing; `append_via_header` uses
+  `map_or_else`.
+* `corx-server::observability::metering::poll_frame` flattens the
+  nested success branch with a let-else.
+* `corx-server::hot_reload::ServerBuild::hot_reload` uses
+  `Arc::clone` explicitly; tests `drop()` the install-default
+  `Result`; the non-Unix `watch_sighup` stub spells out its
+  `unused_async` reason.
+* `corx-server::middleware::origin_guard::tests::make` takes
+  `&SecurityConfig`; `rate_limit::build_host` takes the `Copy`
+  config by value.
+* `corx-server::router::build_router` drops a redundant `must_use`.
+* `corx::main` declares `print_stdout` allowed (CLI design) and
+  swaps an `Arc.clone()` for `Arc::clone(&...)`.
+
+Test/bench wiring:
+* `crates/corx-core/benches/{url_parser,ssrf_guard}.rs` carry an
+  explicit `#![allow(...)]` block with a `reason = "..."` covering
+  `unused_crate_dependencies`, `missing_docs` (criterion macros),
+  and the restriction lints that are inappropriate for benches.
+* `crates/corx-server/tests/integration_proxy.rs` carries the same
+  rationale plus `tests_outside_test_module` for cargo's
+  integration-test convention.
+
+Cargo manifest:
+* `crates/corx-core` declares the two new bench targets with
+  `harness = false` and pulls `criterion` into `dev-dependencies`;
+  `corx-core::lib.rs` carries a `#[cfg(test)] use criterion as _;`
+  anchor so the workspace `unused_crate_dependencies` lint stays
+  green at the library level.
+
+80 tests passing under `cargo test --workspace --all-features`.

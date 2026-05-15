@@ -28,7 +28,15 @@ pub async fn load_shed_layer(
     request: Request,
     next: Next,
 ) -> Response {
-    let max = u64::from(state.build.config.rate_limit.global.inflight_max);
+    let max = u64::from(
+        state
+            .build
+            .policies()
+            .config
+            .rate_limit
+            .global
+            .inflight_max,
+    );
     if max == 0 {
         return next.run(request).await;
     }

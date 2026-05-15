@@ -24,6 +24,10 @@ use crate::router::AppState;
 pub async fn cors_layer(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let request_headers = request.headers().clone();
     let mut response = next.run(request).await;
-    apply_to_response(&mut response, &request_headers, state.build.cors.as_ref());
+    apply_to_response(
+        &mut response,
+        &request_headers,
+        state.build.policies().cors.as_ref(),
+    );
     response
 }

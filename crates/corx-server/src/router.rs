@@ -34,9 +34,12 @@ impl AppState {
 /// Builds the `axum` router with every middleware layer registered.
 #[must_use]
 pub fn build_router(state: AppState) -> Router<()> {
-    let max_body = state.build.config.limits.max_request_body_bytes;
-    let request_timeout = state.build.config.limits.request_timeout;
-    let metrics_path = state.build.config.observability.metrics_endpoint.clone();
+    // Body size and timeout are baked into the router at startup; they
+    // come from the immutable snapshot for the same reason a SIGHUP reload
+    // cannot change them mid-flight.
+    let max_body = state.build.immutable_limits.max_request_body_bytes;
+    let request_timeout = state.build.immutable_limits.request_timeout;
+    let metrics_path = state.build.immutable_metrics_endpoint.clone();
     let body_limit = usize::try_from(max_body).unwrap_or(usize::MAX);
 
     let mut router = Router::new()

@@ -1,31 +1,43 @@
-feat(observability): land M4 telemetry stack (full metric coverage + OTLP traces + build_info)
+feat(server): land M5 operator surface (clap subcommands + arc-swap hot reload + SIGHUP)
 
-* Stream-counted bytes: new CountingBody wraps the inbound (request) and
-  outbound (response) http_body streams so corx_bytes_transferred_total
-  {direction} actually moves on every chunk that flows through the proxy.
-  pin-project-lite preserves Unsync, matching hyper's client body
-  requirements.
-* Full metric description set: REDIRECT_HOPS / SSRF_BLOCKS / DNS_LOOKUPS /
-  WEBSOCKET_ACTIVE / WEBSOCKET_HANDSHAKES / CONFIG_RELOAD / BUILD_INFO are
-  all describe_*-registered up front so /metrics carries HELP and TYPE
-  metadata even before the first event fires. Latency histograms share a
-  1ms..10s bucket layout; redirect-hops use a Fibonacci-flavoured 0..13
-  layout aligned with the upstream redirect cap.
-* DNS_LOOKUPS instrumentation: corx-core::proxy::ssrf::resolve increments
-  the counter under result=literal | ok | error so operators can spot
-  resolver outages and rebinding-style spikes from a single panel.
-* build_info: a one-shot gauge stamped with version, rust_version and the
-  active feature set (tls / mtls / fips / otel) lets dashboards confirm
-  which binary is running without exec'ing into the pod.
-* OpenTelemetry / OTLP (feature otel): new corx-server::observability::
-  otel module builds an opentelemetry_sdk Tracer (gRPC or HTTP wire
-  protocol, configurable sampler + service.name/namespace/version
-  resource attributes) and the tracing-opentelemetry layer is spliced
-  into the same registry as the structured-log subscriber so log records
-  and trace spans share a single context.
-* OtelConfig schema: new observability.otel sub-table with enabled,
-  endpoint, protocol, service_name, service_namespace, resource_attributes,
-  sample_ratio. Defaults are inert (disabled) so nothing changes for
-  operators who do not opt in.
+* `corx` binary gains four explicit subcommands while preserving the
+  bare `corx` invocation:
+  - `serve` (default) starts the listener;
+  - `check` validates the configuration without binding and exits
+    non-zero on failure -- usable as a Kubernetes init container or
+    CI gate;
+  - `dump --format toml|json` prints the fully-resolved configuration
+    so deployments can be diffed against running processes;
+  - `version` prints version + os/arch + active feature set.
+  `--config` is now a global flag so it composes with every subcommand.
+* New `LivePolicies` snapshot bundles every hot-swappable component
+  (config, CORS, request/response filters, request guard, upstream
+  client) and lives behind an `ArcSwap`. Each request loads the
+  snapshot exactly once at the top of the handler chain so the policy
+  view is internally consistent even if a reload races mid-request.
+* Frozen-at-startup fields (server.bind / http2 / tls, body and timeout
+  limits baked into the router, metrics endpoint path) move to dedicated
+  `immutable_*` fields on `ServerBuild` so reloads can detect and reject
+  attempts to change them.
+* New `corx_server::hot_reload` module:
+  - `ReloadHandle` validates immutability, recompiles a `LivePolicies`,
+    and atomically swaps it via `ArcSwap::store`;
+  - `watch_sighup` (Unix only) drives the handle from `SIGHUP`;
+  - rejects are surfaced as `corx_config_reload_total{result="rejected"}`
+    while successful reloads bump `result="ok"` and I/O errors bump
+    `result="error"`.
+* Five hot_reload unit tests cover identical-config success, rejected
+  bind / request_timeout changes, accepted mutable-field changes, and
+  field-wise TLS comparison.
+* `serve()` spawns the SIGHUP watcher as a background tokio task on
+  Unix; the no-op stub keeps Windows builds clean.
 
-68 unit tests passing across the workspace with --all-features.
+73 unit tests passing across the workspace under both the default and
+`--all-features` builds.
+
+BREAKING CHANGE: `ServerBuild` no longer exposes `cors`, `request_filter`,
+`response_filter`, `guard`, `upstream` or `config` directly. Consumers must
+now call `ServerBuild::policies()` to obtain an atomic snapshot, or read
+listener-level metadata from the `immutable_server` / `immutable_limits` /
+`immutable_metrics_endpoint` fields. `clap::Parser` callers must handle the
+new `Command` enum -- the bare `corx` invocation still defaults to `serve`.

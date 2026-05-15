@@ -28,6 +28,7 @@
 pub mod config_loader;
 pub mod error;
 pub mod handlers;
+pub mod hot_reload;
 pub mod middleware;
 pub mod observability;
 pub mod router;
@@ -37,6 +38,7 @@ pub mod state;
 pub mod tls;
 
 pub use self::error::ServerError;
+pub use self::hot_reload::ReloadHandle;
 pub use self::router::{AppState, build_router};
 pub use self::shutdown::run;
 pub use self::state::ServerBuild;

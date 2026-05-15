@@ -44,6 +44,9 @@ axum = { version = "0.8", default-features = false, features = [
     "query",
     "json",
 ] }
+axum-server = { version = "0.7", default-features = false, features = [
+    "tls-rustls-no-provider",
+] }
 tower = { version = "0.5", features = ["util", "timeout", "load-shed"] }
 tower-http = { version = "0.6", features = [
     "trace",

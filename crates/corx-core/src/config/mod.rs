@@ -92,8 +92,21 @@ pub struct ServerConfig {
 pub struct TlsConfig {
     /// Path to the PEM-encoded certificate chain.
     pub cert_path: PathBuf,
-    /// Path to the PEM-encoded private key.
+    /// Path to the PEM-encoded private key (PKCS#8 or RSA).
     pub key_path: PathBuf,
+    /// Path to the PEM-encoded trust anchors used to validate client
+    /// certificates. When set, the server will require mTLS. Requires the
+    /// `mtls` Cargo feature on the binary.
+    #[serde(default)]
+    pub client_ca_path: Option<PathBuf>,
+    /// ALPN protocols to advertise, in preference order. Defaults to
+    /// `["h2", "http/1.1"]`.
+    #[serde(default = "default_alpn_protocols")]
+    pub alpn_protocols: Vec<String>,
+}
+
+fn default_alpn_protocols() -> Vec<String> {
+    vec!["h2".into(), "http/1.1".into()]
 }
 
 /// Size- and time-based limits applied to every request.
@@ -291,19 +304,128 @@ const fn default_true() -> bool {
     true
 }
 
-/// Rate-limit configuration.
+/// Rate-limit configuration covering four orthogonal dimensions.
+///
+/// Each sub-limiter is independent: setting any of `origin.rps`, `ip.rps`,
+/// `target_host.rps` or `global.rps` to `0` disables that dimension while
+/// leaving the others active. Setting [`RateLimitConfig::enabled`] to
+/// `false` disables every dimension at once.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
-    /// Globally enable or disable rate limiting.
+    /// Master switch. When `false`, every dimension below is bypassed.
     pub enabled: bool,
-    /// Requests per second permitted per origin.
-    pub per_origin_rps: u32,
-    /// Additional burst budget on top of the steady-state RPS.
-    pub burst: u32,
-    /// Regular expressions that match origins exempt from rate limiting.
+    /// Per-`Origin`-header limiting.
     #[serde(default)]
-    pub unlimited_hosts: Vec<String>,
+    pub origin: OriginLimitConfig,
+    /// Per-client-IP limiting.
+    #[serde(default)]
+    pub ip: IpLimitConfig,
+    /// Per-target-host limiting (protects upstreams from a single misbehaving
+    /// caller targeting a popular destination).
+    #[serde(default)]
+    pub target_host: HostLimitConfig,
+    /// Process-wide concurrency limiter that drives the load-shed layer.
+    #[serde(default)]
+    pub global: GlobalLimitConfig,
+}
+
+/// Per-`Origin` rate-limit configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginLimitConfig {
+    /// Steady-state requests-per-second; `0` disables this dimension.
+    #[serde(default)]
+    pub rps: u32,
+    /// Token-bucket burst budget on top of `rps`.
+    #[serde(default)]
+    pub burst: u32,
+    /// Regex patterns matched against the request `Origin` header. Matching
+    /// origins bypass the limiter entirely.
+    #[serde(default)]
+    pub unlimited_patterns: Vec<String>,
+}
+
+impl Default for OriginLimitConfig {
+    fn default() -> Self {
+        Self {
+            rps: 0,
+            burst: 0,
+            unlimited_patterns: Vec::new(),
+        }
+    }
+}
+
+/// Per-client-IP rate-limit configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IpLimitConfig {
+    /// Steady-state requests-per-second; `0` disables this dimension.
+    #[serde(default)]
+    pub rps: u32,
+    /// Token-bucket burst budget on top of `rps`.
+    #[serde(default)]
+    pub burst: u32,
+    /// CIDR ranges whose source IPs are exempt from rate limiting (operator
+    /// healthchecks, internal load-balancers, etc.).
+    #[serde(default)]
+    pub trusted_cidrs: Vec<IpNet>,
+}
+
+impl Default for IpLimitConfig {
+    fn default() -> Self {
+        Self {
+            rps: 0,
+            burst: 0,
+            trusted_cidrs: Vec::new(),
+        }
+    }
+}
+
+/// Per-target-host rate-limit configuration.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostLimitConfig {
+    /// Steady-state requests-per-second; `0` disables this dimension.
+    #[serde(default)]
+    pub rps: u32,
+    /// Token-bucket burst budget on top of `rps`.
+    #[serde(default)]
+    pub burst: u32,
+}
+
+impl Default for HostLimitConfig {
+    fn default() -> Self {
+        Self { rps: 0, burst: 0 }
+    }
+}
+
+/// Process-wide global limits that drive the load-shed layer.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalLimitConfig {
+    /// Steady-state requests-per-second across the entire proxy. `0`
+    /// disables the global token bucket.
+    #[serde(default)]
+    pub rps: u32,
+    /// Token-bucket burst budget on top of `rps`.
+    #[serde(default)]
+    pub burst: u32,
+    /// Maximum number of in-flight requests. Exceeding this triggers the
+    /// load-shed layer which immediately answers `503 Service Unavailable`
+    /// with a `Retry-After` header. `0` disables the load-shed layer.
+    #[serde(default)]
+    pub inflight_max: u32,
+}
+
+impl Default for GlobalLimitConfig {
+    fn default() -> Self {
+        Self {
+            rps: 0,
+            burst: 0,
+            inflight_max: 0,
+        }
+    }
 }
 
 /// Upstream HTTP client tuning.

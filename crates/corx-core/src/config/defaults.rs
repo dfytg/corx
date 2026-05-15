@@ -61,9 +61,25 @@ impl Config {
             forwarded: ForwardedConfig::default(),
             rate_limit: RateLimitConfig {
                 enabled: false,
-                per_origin_rps: 10,
-                burst: 20,
-                unlimited_hosts: Vec::new(),
+                origin: super::OriginLimitConfig {
+                    rps: 50,
+                    burst: 100,
+                    unlimited_patterns: Vec::new(),
+                },
+                ip: super::IpLimitConfig {
+                    rps: 30,
+                    burst: 60,
+                    trusted_cidrs: Vec::new(),
+                },
+                target_host: super::HostLimitConfig {
+                    rps: 100,
+                    burst: 200,
+                },
+                global: super::GlobalLimitConfig {
+                    rps: 5_000,
+                    burst: 10_000,
+                    inflight_max: 1_000,
+                },
             },
             upstream: UpstreamConfig {
                 pool_max_idle_per_host: 32,

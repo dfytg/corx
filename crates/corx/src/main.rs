@@ -45,9 +45,10 @@ async fn run_app(cli: Cli) -> anyhow::Result<()> {
     );
 
     let build = ServerBuild::from_config(config.clone(), metrics)?;
+    let ready = build.ready.clone();
     let router = build_router(AppState::new(build));
 
-    run(&config.server, router).await
+    run(&config.server, router, ready).await
 }
 
 fn install_crypto_provider() {

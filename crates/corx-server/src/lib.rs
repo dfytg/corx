@@ -33,6 +33,8 @@ pub mod observability;
 pub mod router;
 pub mod shutdown;
 pub mod state;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 pub use self::error::ServerError;
 pub use self::router::{AppState, build_router};

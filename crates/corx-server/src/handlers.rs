@@ -40,9 +40,32 @@ pub(crate) async fn usage() -> Response {
         .into_response()
 }
 
-/// `GET /healthz` — liveness probe.
-pub(crate) async fn healthz() -> Response {
-    (StatusCode::OK, "ok").into_response()
+/// `GET /livez` — process liveness. Returns `200 OK` until the process
+/// panics; load balancers should *not* drain on this signal.
+pub(crate) async fn livez() -> Response {
+    (StatusCode::OK, "live").into_response()
+}
+
+/// `GET /readyz` — readiness for traffic. Returns `503 Service Unavailable`
+/// while the server is draining so load balancers stop sending new
+/// requests.
+pub(crate) async fn readyz(State(state): State<AppState>) -> Response {
+    if state.build.ready.load(std::sync::atomic::Ordering::Acquire) {
+        let body = serde_json::json!({"status": "ready"});
+        (StatusCode::OK, Json(body)).into_response()
+    } else {
+        let body = serde_json::json!({
+            "status": "draining",
+            "reason": "shutdown signal received",
+        });
+        (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
+    }
+}
+
+/// `GET /healthz` — backwards-compatible alias kept for Kubernetes default
+/// probes. Mirrors `/readyz` so behaviour stays consistent.
+pub(crate) async fn healthz(state: State<AppState>) -> Response {
+    readyz(state).await
 }
 
 /// `GET /iscorsneeded` — cors-anywhere compatibility endpoint.
@@ -120,12 +143,8 @@ async fn serve(
     request: Request<AxumBody>,
     client_ip: IpAddr,
 ) -> Result<Response, ServerError> {
-    // Inbound guards (origin, rate-limit, required headers, blocked methods).
-    if !is_preflight(&request) {
-        state.build.guard.evaluate(&request)?;
-    }
-
-    // CORS preflight short-circuit.
+    // CORS preflight short-circuit (no guards: preflights cannot carry the
+    // information the guards need and browsers cache them via max-age).
     if is_preflight(&request) {
         let response = proxy::build_preflight_response(&request, state.build.cors.as_ref());
         let (parts, body) = response.into_parts();
@@ -133,8 +152,17 @@ async fn serve(
         return Ok(Response::from_parts(parts, axum_body));
     }
 
+    // Stage 1: cheap origin / method / required-header guards.
+    state.build.guard.check_origin(&request)?;
+
     // Extract and validate the upstream target URL.
     let target = proxy::extract_target(request.uri())?;
+
+    // Stage 2: multi-dimensional rate limiting now that we know the target.
+    state
+        .build
+        .guard
+        .check_rate(&request, client_ip, &target.host)?;
 
     execute_proxy(state, request, target, client_ip).await
 }

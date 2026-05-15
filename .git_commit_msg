@@ -1,0 +1,36 @@
+feat(server): land M3-P1 production capabilities (multi-dim rate limit + load shed + TLS/mTLS/FIPS + livez/readyz + access log)
+
+* Multi-dimensional rate limiter: per-Origin (regex unlimited list),
+  per-IP (CIDR trust list), per-Target-Host and Global token buckets,
+  all backed by governor's lock-free GCRA. The first dimension to fail
+  wins so we attribute rejections to the most specific cause via the
+  corx_rate_limited_total{dimension} counter.
+* Load-shed middleware: when rate_limit.global.inflight_max > 0, an
+  atomic counter on ServerBuild rejects excess concurrency with
+  503 Service Unavailable + Retry-After: 1 and bumps the same counter
+  under dimension="global".
+* TLS/mTLS/FIPS: new corx-server::tls module compiles a rustls
+  ServerConfig from the operator's cert / key / optional client CA,
+  advertises ALPN (default h2 / http/1.1), and serves via axum-server
+  with the same graceful-shutdown signal as the cleartext path. mtls
+  is feature-gated; fips flips the rustls provider to aws-lc-rs through
+  corx-core/fips.
+* Health probes: /livez (bare process liveness) and /readyz (drains to
+  503 once a shutdown signal flips ServerBuild::ready). /healthz is
+  kept as an alias of /readyz for k8s default probes.
+* Graceful shutdown v2: shutdown_signal flips ready immediately on
+  SIGTERM/Ctrl+C so load balancers stop routing while in-flight
+  requests drain.
+* Access log: corx::access event per completed request with method,
+  path, status, duration_ms, client_ip, origin, request_id, error_kind,
+  layered at the outermost position so it captures timeouts and
+  load-shed responses.
+* Two-stage RequestGuard (check_origin then check_rate) so the
+  per-target-host bucket sees the validated punycode hostname.
+
+BREAKING CHANGE: RateLimitConfig flattened single-bucket schema replaced
+with four nested sub-configs (origin / ip / target_host / global).
+TlsConfig gains client_ca_path and alpn_protocols. shutdown::run now
+takes Arc<AtomicBool> ready flag.
+
+68 unit tests passing across the workspace with --all-features.

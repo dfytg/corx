@@ -148,22 +148,55 @@ fn validate_rate_limit(cfg: &RateLimitConfig, report: &mut ValidationReport) {
     if !cfg.enabled {
         return;
     }
-    if cfg.per_origin_rps == 0 {
+
+    let any_enabled = cfg.origin.rps > 0
+        || cfg.ip.rps > 0
+        || cfg.target_host.rps > 0
+        || cfg.global.rps > 0
+        || cfg.global.inflight_max > 0;
+    if !any_enabled {
         report.errors.push(ConfigError::new(
-            "rate_limit.per_origin_rps",
-            "must be > 0 when rate_limit.enabled = true",
+            "rate_limit",
+            "rate_limit.enabled = true but every dimension is at 0; either \
+             disable rate-limiting or set at least one of origin.rps / ip.rps / \
+             target_host.rps / global.rps / global.inflight_max",
         ));
     }
-    if cfg.burst == 0 {
-        report.errors.push(ConfigError::new(
-            "rate_limit.burst",
-            "must be > 0 when rate_limit.enabled = true",
-        ));
+
+    check_dimension(
+        report,
+        "rate_limit.origin",
+        cfg.origin.rps,
+        cfg.origin.burst,
+    );
+    check_dimension(report, "rate_limit.ip", cfg.ip.rps, cfg.ip.burst);
+    check_dimension(
+        report,
+        "rate_limit.target_host",
+        cfg.target_host.rps,
+        cfg.target_host.burst,
+    );
+    check_dimension(
+        report,
+        "rate_limit.global",
+        cfg.global.rps,
+        cfg.global.burst,
+    );
+}
+
+fn check_dimension(report: &mut ValidationReport, prefix: &'static str, rps: u32, burst: u32) {
+    if rps == 0 {
+        return; // disabled, nothing to check
     }
-    if cfg.burst < cfg.per_origin_rps {
+    if burst == 0 {
+        report.errors.push(ConfigError::new(
+            format!("{prefix}.burst"),
+            "must be > 0 when the dimension's rps is > 0",
+        ));
+    } else if burst < rps {
         report.warnings.push(ConfigError::new(
-            "rate_limit.burst",
-            "burst smaller than per_origin_rps gives no headroom for bursty clients",
+            format!("{prefix}.burst"),
+            "burst smaller than rps gives no headroom for bursty clients",
         ));
     }
 }
@@ -256,13 +289,26 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_enabled_with_zero_rps_is_rejected() {
+    fn rate_limit_enabled_with_all_dimensions_zero_is_rejected() {
         let mut cfg = base();
         cfg.rate_limit.enabled = true;
-        cfg.rate_limit.per_origin_rps = 0;
-        cfg.rate_limit.burst = 1;
+        cfg.rate_limit.origin.rps = 0;
+        cfg.rate_limit.ip.rps = 0;
+        cfg.rate_limit.target_host.rps = 0;
+        cfg.rate_limit.global.rps = 0;
+        cfg.rate_limit.global.inflight_max = 0;
         let err = cfg.validate().unwrap_err();
-        assert_eq!(err.path, "rate_limit.per_origin_rps");
+        assert_eq!(err.path, "rate_limit");
+    }
+
+    #[test]
+    fn rate_limit_dimension_with_zero_burst_is_rejected() {
+        let mut cfg = base();
+        cfg.rate_limit.enabled = true;
+        cfg.rate_limit.origin.rps = 10;
+        cfg.rate_limit.origin.burst = 0;
+        let err = cfg.validate().unwrap_err();
+        assert_eq!(err.path, "rate_limit.origin.burst");
     }
 
     #[test]
@@ -280,6 +326,8 @@ mod tests {
             tls: Some(crate::config::TlsConfig {
                 cert_path: std::path::PathBuf::from("/does/not/exist.pem"),
                 key_path: std::path::PathBuf::from("/does/not/exist.key"),
+                client_ca_path: None,
+                alpn_protocols: vec!["h2".into(), "http/1.1".into()],
             }),
             ..cfg.server
         };

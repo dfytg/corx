@@ -1,11 +1,13 @@
 //! Combined inbound request guard used by the `axum` router layer.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use corx_core::error::ProxyError;
 use http::Method;
 use http::Request;
 
+use crate::middleware::rate_limit::RateContext;
 use crate::middleware::{OriginPolicy, RateLimiter};
 
 /// Bundles all synchronous inbound checks into a single entry point so that
@@ -26,25 +28,39 @@ impl RequestGuard {
         }
     }
 
-    /// Evaluates all inbound guards for `request` and returns the origin
-    /// string that was used for the decision, when present.
+    /// Origin policy / required headers / blocked methods. Cheap, runs
+    /// before URL extraction so that obviously-bad requests never reach the
+    /// parser.
     ///
     /// # Errors
     ///
-    /// Surfaces the first failing guard. Ordering is:
+    /// Forwards [`OriginPolicy::evaluate`] failures.
+    pub fn check_origin<B>(&self, request: &Request<B>) -> Result<(), ProxyError> {
+        self.origin.evaluate(request.method(), request.headers())
+    }
+
+    /// Multi-dimensional rate limiting. Run *after* URL extraction so the
+    /// `target_host` dimension can use the validated punycode hostname.
     ///
-    /// 1. origin blacklist / whitelist / required headers / blocked methods,
-    /// 2. rate limiting.
-    pub fn evaluate<B>(&self, request: &Request<B>) -> Result<Option<&'static str>, ProxyError> {
-        self.origin.evaluate(request.method(), request.headers())?;
-        if let Some(origin) = request
+    /// # Errors
+    ///
+    /// Returns [`ProxyError::RateLimited`] when any dimension exhausts.
+    pub fn check_rate<B>(
+        &self,
+        request: &Request<B>,
+        client_ip: IpAddr,
+        target_host: &str,
+    ) -> Result<(), ProxyError> {
+        let origin = request
             .headers()
             .get(http::header::ORIGIN)
-            .and_then(|value| value.to_str().ok())
-        {
-            self.rate_limit.check(origin)?;
-        }
-        Ok(None)
+            .and_then(|value| value.to_str().ok());
+        let ctx = RateContext {
+            origin,
+            client_ip,
+            target_host,
+        };
+        self.rate_limit.check(&ctx)
     }
 
     /// Short-circuits CORS preflights to avoid rate-limiting them away.

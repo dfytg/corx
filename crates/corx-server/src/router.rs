@@ -11,7 +11,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::handlers;
-use crate::middleware::cors_layer;
+use crate::middleware::{access_log_layer, cors_layer, load_shed_layer};
 use crate::state::ServerBuild;
 
 /// Shared application state injected into every handler.
@@ -41,6 +41,8 @@ pub fn build_router(state: AppState) -> Router<()> {
 
     let mut router = Router::new()
         .route("/", get(handlers::usage))
+        .route("/livez", get(handlers::livez))
+        .route("/readyz", get(handlers::readyz))
         .route("/healthz", get(handlers::healthz))
         .route("/iscorsneeded", get(handlers::is_cors_needed));
 
@@ -51,14 +53,23 @@ pub fn build_router(state: AppState) -> Router<()> {
     router
         .fallback(any(handlers::proxy))
         .method_not_allowed_fallback(handlers::not_found)
-        // The CORS layer must run *with* the application state because the
-        // policy is owned by `ServerBuild`. Apply it before stripping state.
+        // CORS runs first (innermost), so even responses from later layers
+        // gain the headers; load-shed sits just outside it so 503s also
+        // leave with valid CORS metadata.
         .layer(middleware::from_fn_with_state(state.clone(), cors_layer))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            load_shed_layer,
+        ))
         .with_state(state)
         .layer(DefaultBodyLimit::max(body_limit))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
             request_timeout,
         ))
+        // Access log sits at the outermost level so it observes the *final*
+        // status (including timeouts and load-shed responses) and the wall
+        // clock duration the client actually saw.
+        .layer(middleware::from_fn(access_log_layer))
         .layer(TraceLayer::new_for_http())
 }

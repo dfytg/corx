@@ -1,6 +1,7 @@
 //! Assembled dependencies ready to be injected into the `axum` router.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use corx_core::config::Config;
 use corx_core::proxy::{CorsPolicy, RequestFilter, ResponseFilter, SsrfGuard, Upstream};
@@ -23,6 +24,13 @@ pub struct ServerBuild {
     pub guard: RequestGuard,
     /// Upstream HTTP client.
     pub upstream: Upstream,
+    /// Live in-flight counter feeding the load-shed layer. Independent of
+    /// the Prometheus gauge so the hot path stays free of metrics overhead.
+    pub inflight: Arc<AtomicU64>,
+    /// Liveness flag. Flipped to `false` once a shutdown signal arrives so
+    /// `/readyz` can announce that the listener is draining and load
+    /// balancers should remove the pod from rotation.
+    pub ready: Arc<AtomicBool>,
     /// Prometheus exposition handle.
     pub metrics: MetricsHandle,
 }
@@ -64,6 +72,8 @@ impl ServerBuild {
             response_filter: Arc::new(response_filter),
             guard,
             upstream,
+            inflight: Arc::new(AtomicU64::new(0)),
+            ready: Arc::new(AtomicBool::new(true)),
             metrics,
         })
     }

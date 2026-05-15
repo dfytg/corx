@@ -19,7 +19,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-tls = ["dep:tokio-rustls", "dep:rustls-pemfile"]
+tls = ["dep:tokio-rustls", "dep:rustls-pemfile", "dep:axum-server"]
 mtls = ["tls"]
 fips = ["corx-core/fips"]
 otel = [
@@ -40,6 +40,7 @@ http-body-util = { workspace = true }
 bytes = { workspace = true }
 
 axum = { workspace = true }
+axum-server = { workspace = true, optional = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 
@@ -53,6 +54,7 @@ rustls-pemfile = { workspace = true, optional = true }
 
 governor = { workspace = true }
 regex = { workspace = true }
+ipnet = { workspace = true }
 
 arc-swap = { workspace = true }
 foldhash = { workspace = true }

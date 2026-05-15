@@ -62,10 +62,26 @@ extra_allowed_cidrs   = []                                # punch holes for trus
 deny_redirect_to_private = true                           # also enforced on cross-host redirects
 
 [rate_limit]
-enabled = false
-per_origin_rps = 10
-burst = 20
-unlimited_hosts = []               # list of regex patterns matched against Origin
+enabled = false                                  # master switch
+
+[rate_limit.origin]
+rps                 = 50
+burst               = 100
+unlimited_patterns  = []                          # regex on the Origin header
+
+[rate_limit.ip]
+rps                 = 30
+burst               = 60
+trusted_cidrs       = []                          # CIDRs exempt from per-IP limits
+
+[rate_limit.target_host]
+rps                 = 100
+burst               = 200
+
+[rate_limit.global]
+rps                 = 5000                        # global RPS cap
+burst               = 10000
+inflight_max        = 1000                        # 0 disables the load-shed layer
 
 [upstream]
 pool_max_idle_per_host = 32

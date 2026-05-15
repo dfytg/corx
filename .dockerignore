@@ -1,0 +1,24 @@
+# Build outputs and editor / OS noise.
+target/
+**/target/
+.git/
+.github/
+.idea/
+.vscode/
+.windsurf/
+.DS_Store
+
+# Existing CI / chart artefacts -- already shipped from elsewhere.
+charts/
+docs/
+
+# Test fixtures and benches that are not needed at runtime.
+**/tests/
+**/benches/
+**/*.bench.rs
+
+# Local-only files
+*.log
+*.swp
+.env
+.env.*

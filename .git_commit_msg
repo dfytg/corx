@@ -1,43 +1,32 @@
-feat(server): land M5 operator surface (clap subcommands + arc-swap hot reload + SIGHUP)
+chore(deploy): land M6 release & deploy infrastructure (Dockerfile + Helm + compose + signed images)
 
-* `corx` binary gains four explicit subcommands while preserving the
-  bare `corx` invocation:
-  - `serve` (default) starts the listener;
-  - `check` validates the configuration without binding and exits
-    non-zero on failure -- usable as a Kubernetes init container or
-    CI gate;
-  - `dump --format toml|json` prints the fully-resolved configuration
-    so deployments can be diffed against running processes;
-  - `version` prints version + os/arch + active feature set.
-  `--config` is now a global flag so it composes with every subcommand.
-* New `LivePolicies` snapshot bundles every hot-swappable component
-  (config, CORS, request/response filters, request guard, upstream
-  client) and lives behind an `ArcSwap`. Each request loads the
-  snapshot exactly once at the top of the handler chain so the policy
-  view is internally consistent even if a reload races mid-request.
-* Frozen-at-startup fields (server.bind / http2 / tls, body and timeout
-  limits baked into the router, metrics endpoint path) move to dedicated
-  `immutable_*` fields on `ServerBuild` so reloads can detect and reject
-  attempts to change them.
-* New `corx_server::hot_reload` module:
-  - `ReloadHandle` validates immutability, recompiles a `LivePolicies`,
-    and atomically swaps it via `ArcSwap::store`;
-  - `watch_sighup` (Unix only) drives the handle from `SIGHUP`;
-  - rejects are surfaced as `corx_config_reload_total{result="rejected"}`
-    while successful reloads bump `result="ok"` and I/O errors bump
-    `result="error"`.
-* Five hot_reload unit tests cover identical-config success, rejected
-  bind / request_timeout changes, accepted mutable-field changes, and
-  field-wise TLS comparison.
-* `serve()` spawns the SIGHUP watcher as a background tokio task on
-  Unix; the no-op stub keeps Windows builds clean.
-
-73 unit tests passing across the workspace under both the default and
-`--all-features` builds.
-
-BREAKING CHANGE: `ServerBuild` no longer exposes `cors`, `request_filter`,
-`response_filter`, `guard`, `upstream` or `config` directly. Consumers must
-now call `ServerBuild::policies()` to obtain an atomic snapshot, or read
-listener-level metadata from the `immutable_server` / `immutable_limits` /
-`immutable_metrics_endpoint` fields. `clap::Parser` callers must handle the
-new `Command` enum -- the bare `corx` invocation still defaults to `serve`.
+* Multi-arch container image: rewrite the legacy single-stage Dockerfile
+  into a four-stage cargo-chef pipeline (chef -> planner -> builder ->
+  runtime). The builder accepts a `FEATURES` build arg so the same
+  Dockerfile produces both the lean HTTP-only image and a TLS+OTel
+  build, picks up the new workspace layout, ships under
+  `gcr.io/distroless/cc-debian12:nonroot`, exposes /etc/corx/config.toml
+  with sensible env defaults, and ENTRYPOINTs into `corx serve`.
+* `.dockerignore` removes target/, charts/, docs/ and the .git tree from
+  the build context so cargo-chef's recipe stays stable across feature
+  branches.
+* `docker-compose.yml` plus `deploy/{prometheus.yml, otel-collector.yaml,
+  grafana-datasources.yml}` give a one-shot local stack: corx + OTLP
+  collector + Prometheus + Grafana wired together with a healthcheck
+  that re-uses the new `corx check` subcommand.
+* New Helm chart at `charts/corx`: ConfigMap-mounted TOML, Deployment
+  with checksum-based config rollout, Service, Ingress, HPA, PDB,
+  ServiceAccount, ServiceMonitor and a NOTES.txt that documents the
+  SIGHUP-driven hot-reload contract. Probes target `/livez` and
+  `/readyz` to align with the M3 readiness model.
+* New GitHub workflows:
+  - `docker.yml` builds linux/amd64 + linux/arm64 images, pushes to
+    GHCR, signs each tag with cosign, generates a CycloneDX SBOM via
+    anchore/sbom-action, and attests provenance for tagged releases via
+    `actions/attest-build-provenance`.
+  - `helm.yml` lints, renders and `kubeconform`-validates the chart on
+    every PR, then publishes a packaged chart to GHCR's OCI registry on
+    tag pushes.
+* `deny.toml` codifies the cargo-deny policy used by the upstream
+  `qntx/workflows/ci-rust.yml` runner -- explicit licence allow-list,
+  yanked-deny, registry pinning to crates.io.

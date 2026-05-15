@@ -14,6 +14,7 @@ use http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use http_body_util::BodyExt as _;
 
 use crate::error::ServerError;
+use crate::observability::CountingBody;
 use crate::observability::metrics as stats;
 use crate::router::AppState;
 
@@ -257,7 +258,8 @@ fn shape_response(
     proxy::apply_to_response(&mut reassembled, request_headers, state.build.cors.as_ref());
 
     let (parts, body) = reassembled.into_parts();
-    let axum_body = AxumBody::new(body.map_err(axum::Error::new));
+    let counted = CountingBody::new(body, "response");
+    let axum_body = AxumBody::new(counted.map_err(axum::Error::new));
     Ok(Response::from_parts(parts, axum_body))
 }
 
@@ -295,7 +297,9 @@ fn append_via_header(headers: &mut HeaderMap) {
 }
 
 fn axum_to_upstream_body(body: AxumBody) -> UpstreamBody {
-    body.map_err(|err| ProxyError::Internal(anyhow::Error::new(err)))
+    let counted = CountingBody::new(body, "request");
+    counted
+        .map_err(|err| ProxyError::Internal(anyhow::Error::new(err)))
         .boxed_unsync()
 }
 

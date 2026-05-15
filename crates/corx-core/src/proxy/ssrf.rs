@@ -148,18 +148,24 @@ impl SsrfGuard {
     pub async fn resolve(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, ProxyError> {
         // Accept bare IP literals without consulting DNS.
         if let Ok(ip) = host.parse::<IpAddr>() {
+            metrics::counter!(observability::DNS_LOOKUPS, "result" => "literal").increment(1);
             let canonical = self.check_ip(ip)?;
             return Ok(vec![SocketAddr::new(canonical, port)]);
         }
 
-        let lookup = self
-            .resolver
-            .lookup_ip(host)
-            .await
-            .map_err(|err| ProxyError::Dns {
-                host: host.to_owned(),
-                source: Box::new(err),
-            })?;
+        let lookup = match self.resolver.lookup_ip(host).await {
+            Ok(lookup) => {
+                metrics::counter!(observability::DNS_LOOKUPS, "result" => "ok").increment(1);
+                lookup
+            }
+            Err(err) => {
+                metrics::counter!(observability::DNS_LOOKUPS, "result" => "error").increment(1);
+                return Err(ProxyError::Dns {
+                    host: host.to_owned(),
+                    source: Box::new(err),
+                });
+            }
+        };
 
         let mut admissible: Vec<SocketAddr> = Vec::new();
         let mut last_violation: Option<ProxyError> = None;

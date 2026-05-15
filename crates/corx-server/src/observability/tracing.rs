@@ -1,4 +1,8 @@
 //! `tracing` subscriber bootstrap.
+//!
+//! When the `otel` Cargo feature is on and `observability.otel.enabled = true`, 
+//! an OpenTelemetry / OTLP layer is spliced into the same registry so application 
+//! logs and distributed traces share the same context.
 
 use corx_core::config::{LogFormat, ObservabilityConfig};
 use tracing_subscriber::EnvFilter;
@@ -18,11 +22,14 @@ pub fn init_tracing(cfg: &ObservabilityConfig) -> anyhow::Result<()> {
         .or_else(|_| EnvFilter::try_from_default_env())
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
+    #[cfg(feature = "otel")]
+    let otel_tracer = crate::observability::otel::build_tracer(&cfg.otel)?;
+
     let registry = tracing_subscriber::registry().with(filter);
 
     match cfg.log_format {
         LogFormat::Json => {
-            let layer = tracing_subscriber::fmt::layer()
+            let fmt = tracing_subscriber::fmt::layer()
                 .with_target(true)
                 .with_level(true)
                 .with_thread_ids(false)
@@ -31,15 +38,31 @@ pub fn init_tracing(cfg: &ObservabilityConfig) -> anyhow::Result<()> {
                 .flatten_event(true)
                 .with_current_span(true)
                 .with_span_list(false);
-            registry.with(layer).try_init()?;
+            #[cfg(feature = "otel")]
+            {
+                let otel_layer = otel_tracer.map(tracing_opentelemetry::OpenTelemetryLayer::new);
+                registry.with(fmt).with(otel_layer).try_init()?;
+            }
+            #[cfg(not(feature = "otel"))]
+            {
+                registry.with(fmt).try_init()?;
+            }
         }
         LogFormat::Pretty => {
-            let layer = tracing_subscriber::fmt::layer()
+            let fmt = tracing_subscriber::fmt::layer()
                 .with_target(false)
                 .with_level(true)
                 .with_ansi(true)
                 .compact();
-            registry.with(layer).try_init()?;
+            #[cfg(feature = "otel")]
+            {
+                let otel_layer = otel_tracer.map(tracing_opentelemetry::OpenTelemetryLayer::new);
+                registry.with(fmt).with(otel_layer).try_init()?;
+            }
+            #[cfg(not(feature = "otel"))]
+            {
+                registry.with(fmt).try_init()?;
+            }
         }
     }
 

@@ -92,3 +92,12 @@ user_agent = "corx/0.1.0"
 log_format = "json"                # json | pretty
 log_level  = "info"
 metrics_endpoint = "/metrics"
+
+[observability.otel]
+enabled              = false               # requires the `otel` cargo feature
+endpoint             = "http://otel-collector:4317"
+protocol             = "grpc"               # grpc | http
+service_name         = "corx"
+service_namespace    = ""                  # optional logical grouping
+resource_attributes  = []                  # ["deployment.environment=prod", "team=platform"]
+sample_ratio         = 0.1                 # 1.0 keeps every span; 0.1 keeps 10%

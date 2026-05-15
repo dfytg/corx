@@ -90,6 +90,7 @@ impl Config {
                 log_format: LogFormat::Json,
                 log_level: "info".into(),
                 metrics_endpoint: "/metrics".into(),
+                otel: super::OtelConfig::default(),
             },
         }
     }

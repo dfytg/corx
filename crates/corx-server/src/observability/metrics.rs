@@ -33,6 +33,16 @@ impl MetricsHandle {
     }
 }
 
+/// Latency histogram bucket layout shared by every duration metric. Spans
+/// 1 ms \u2192 10 s on a near-logarithmic scale, matching the SLO ranges most
+/// API gateways care about.
+const LATENCY_BUCKETS: &[f64] = &[
+    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+/// Bucket layout for redirect-hop counts.
+const REDIRECT_HOP_BUCKETS: &[f64] = &[0.0, 1.0, 2.0, 3.0, 5.0, 8.0, 13.0];
+
 /// Initialises the Prometheus recorder and registers metric descriptions.
 ///
 /// # Errors
@@ -42,15 +52,15 @@ pub fn init_metrics() -> anyhow::Result<MetricsHandle> {
     let handle = PrometheusBuilder::new()
         .set_buckets_for_metric(
             metrics_exporter_prometheus::Matcher::Full(REQUEST_DURATION.into()),
-            &[
-                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
-            ],
+            LATENCY_BUCKETS,
         )?
         .set_buckets_for_metric(
             metrics_exporter_prometheus::Matcher::Full(UPSTREAM_DURATION.into()),
-            &[
-                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
-            ],
+            LATENCY_BUCKETS,
+        )?
+        .set_buckets_for_metric(
+            metrics_exporter_prometheus::Matcher::Full(REDIRECT_HOPS.into()),
+            REDIRECT_HOP_BUCKETS,
         )?
         .install_recorder()?;
 
@@ -82,9 +92,79 @@ pub fn init_metrics() -> anyhow::Result<MetricsHandle> {
     describe_counter!(
         BYTES_TRANSFERRED,
         Unit::Bytes,
-        "Bytes transferred through the proxy"
+        "Bytes transferred through the proxy, keyed by direction"
     );
-    describe_counter!(RATE_LIMITED, Unit::Count, "Rate limited request rejections");
+    describe_counter!(
+        RATE_LIMITED,
+        Unit::Count,
+        "Rate-limited request rejections, keyed by dimension",
+    );
+    describe_counter!(
+        SSRF_BLOCKS,
+        Unit::Count,
+        "SSRF policy interceptions, keyed by the matching CIDR",
+    );
+    describe_counter!(
+        DNS_LOOKUPS,
+        Unit::Count,
+        "DNS lookup outcomes, keyed by result",
+    );
+    describe_histogram!(
+        REDIRECT_HOPS,
+        Unit::Count,
+        "Number of redirect hops followed per request, keyed by target host",
+    );
+    describe_gauge!(
+        WEBSOCKET_ACTIVE,
+        Unit::Count,
+        "Currently active WebSocket connections",
+    );
+    describe_counter!(
+        WEBSOCKET_HANDSHAKES,
+        Unit::Count,
+        "WebSocket handshake outcomes, keyed by status",
+    );
+    describe_counter!(
+        CONFIG_RELOAD,
+        Unit::Count,
+        "Configuration reload attempts, keyed by result",
+    );
+    describe_gauge!(
+        BUILD_INFO,
+        Unit::Count,
+        "Build information watermark; always reported as 1",
+    );
+
+    // Stamp build_info exactly once with the binary's identity. The label
+    // set is small and deterministic so this never causes cardinality
+    // explosions.
+    let features = active_features();
+    metrics::gauge!(
+        BUILD_INFO,
+        "version" => env!("CARGO_PKG_VERSION"),
+        "rust_version" => env!("CARGO_PKG_RUST_VERSION"),
+        "features" => features,
+    )
+    .set(1.0);
 
     Ok(MetricsHandle { inner: handle })
+}
+
+fn active_features() -> &'static str {
+    // Keep the result static; cardinality stays low.
+    if cfg!(all(feature = "tls", feature = "mtls", feature = "fips", feature = "otel")) {
+        "tls,mtls,fips,otel"
+    } else if cfg!(all(feature = "tls", feature = "mtls", feature = "otel")) {
+        "tls,mtls,otel"
+    } else if cfg!(all(feature = "tls", feature = "mtls")) {
+        "tls,mtls"
+    } else if cfg!(all(feature = "tls", feature = "otel")) {
+        "tls,otel"
+    } else if cfg!(feature = "tls") {
+        "tls"
+    } else if cfg!(feature = "otel") {
+        "otel"
+    } else {
+        "none"
+    }
 }

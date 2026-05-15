@@ -11,8 +11,8 @@ use governor::state::keyed::DashMapStateStore;
 use governor::{Quota, RateLimiter as GovRateLimiter};
 use regex::RegexSet;
 
-use crate::config::RateLimitConfig;
-use crate::error::ProxyError;
+use corx_core::config::RateLimitConfig;
+use corx_core::error::ProxyError;
 
 type Limiter = GovRateLimiter<String, DashMapStateStore<String>, QuantaClock>;
 
@@ -100,8 +100,9 @@ impl RateLimiter {
 
 #[cfg(test)]
 mod tests {
+    use corx_core::config::RateLimitConfig;
+
     use super::RateLimiter;
-    use crate::config::RateLimitConfig;
 
     fn cfg(enabled: bool, rps: u32, burst: u32) -> RateLimitConfig {
         RateLimitConfig {

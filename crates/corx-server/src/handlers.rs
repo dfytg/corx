@@ -10,10 +10,12 @@ use http::header::HeaderName;
 use http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use http_body_util::BodyExt as _;
 
-use crate::error::ProxyError;
+use corx_core::error::ProxyError;
+use corx_core::proxy::{self, TargetUrl, UpstreamBody, is_preflight};
+
+use crate::error::ServerError;
 use crate::observability::metrics as stats;
-use crate::proxy::{self, TargetUrl, UpstreamBody, is_preflight};
-use crate::server::router::AppState;
+use crate::router::AppState;
 
 const EXPOSE_URL_HEADER: HeaderName = HeaderName::from_static("x-corx-target-url");
 const VIA_HEADER_VALUE: &str = "1.1 corx";
@@ -29,7 +31,7 @@ GET /iscorsneeded      cors-anywhere compatibility shim\n    \
 GET /metrics           Prometheus exposition\n";
 
 /// Landing page describing how to use the proxy.
-pub(super) async fn usage() -> Response {
+pub(crate) async fn usage() -> Response {
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
@@ -39,12 +41,12 @@ pub(super) async fn usage() -> Response {
 }
 
 /// `GET /healthz` — liveness probe.
-pub(super) async fn healthz() -> Response {
+pub(crate) async fn healthz() -> Response {
     (StatusCode::OK, "ok").into_response()
 }
 
 /// `GET /iscorsneeded` — cors-anywhere compatibility endpoint.
-pub(super) async fn is_cors_needed() -> Response {
+pub(crate) async fn is_cors_needed() -> Response {
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
@@ -54,7 +56,7 @@ pub(super) async fn is_cors_needed() -> Response {
 }
 
 /// `GET /metrics` — Prometheus text exposition.
-pub(super) async fn prometheus_metrics(State(state): State<AppState>) -> Response {
+pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Response {
     let body = state.build.metrics.render();
     (
         StatusCode::OK,
@@ -68,10 +70,10 @@ pub(super) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
 }
 
 /// Primary proxy handler, bound to any path matching `/*path`.
-pub(super) async fn proxy(
+pub(crate) async fn proxy(
     State(state): State<AppState>,
     request: Request<AxumBody>,
-) -> Result<Response, ProxyError> {
+) -> Result<Response, ServerError> {
     let started = Instant::now();
     metrics::counter!(stats::REQUESTS_TOTAL).increment(1);
     metrics::gauge!(stats::INFLIGHT_REQUESTS).increment(1.0);
@@ -90,7 +92,7 @@ pub(super) async fn proxy(
             .record(started.elapsed().as_secs_f64());
         }
         Err(error) => {
-            let kind = error.kind();
+            let kind = error.0.kind();
             metrics::counter!(stats::UPSTREAM_ERRORS, "kind" => kind.as_str()).increment(1);
             metrics::histogram!(
                 stats::REQUEST_DURATION,
@@ -112,7 +114,7 @@ impl Drop for InflightGuard {
     }
 }
 
-async fn serve(state: AppState, request: Request<AxumBody>) -> Result<Response, ProxyError> {
+async fn serve(state: AppState, request: Request<AxumBody>) -> Result<Response, ServerError> {
     // Inbound guards (origin, rate-limit, required headers, blocked methods).
     if !is_preflight(&request) {
         state.build.guard.evaluate(&request)?;
@@ -136,7 +138,7 @@ async fn execute_proxy(
     state: AppState,
     request: Request<AxumBody>,
     target: TargetUrl,
-) -> Result<Response, ProxyError> {
+) -> Result<Response, ServerError> {
     let (mut parts, body) = request.into_parts();
     // Preserve inbound headers so that CORS can still reflect the original
     // Origin after the request has been consumed by the upstream client.
@@ -176,7 +178,7 @@ fn shape_response(
     state: &AppState,
     target: &TargetUrl,
     request_headers: &HeaderMap,
-) -> Result<Response, ProxyError> {
+) -> Result<Response, ServerError> {
     let (mut parts, body) = response.into_parts();
     state.build.response_filter.apply(&mut parts.headers);
 
@@ -248,7 +250,7 @@ fn axum_to_upstream_body(body: AxumBody) -> UpstreamBody {
 }
 
 /// Fallback handler used when the router cannot match a path.
-pub(super) async fn not_found() -> Response {
+pub(crate) async fn not_found() -> Response {
     let body = serde_json::json!({
         "error": "not_found",
         "message": "resource not found",

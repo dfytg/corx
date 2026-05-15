@@ -1,10 +1,10 @@
 [workspace]
-members = ["corx"]
-default-members = ["corx"]
+members = ["crates/corx-core", "crates/corx-server", "crates/corx"]
+default-members = ["crates/corx"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
@@ -15,6 +15,10 @@ keywords = ["cors", "proxy"]
 categories = ["network-programming"]
 
 [workspace.dependencies]
+# Internal crates
+corx-core = { path = "crates/corx-core", version = "0.2.0" }
+corx-server = { path = "crates/corx-server", version = "0.2.0" }
+
 # HTTP core
 hyper = { version = "1.6", features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", features = [
@@ -124,6 +128,19 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false, features = [
     "http-listener",
 ] }
+opentelemetry = { version = "0.27", default-features = false, features = [
+    "trace",
+] }
+opentelemetry_sdk = { version = "0.27", default-features = false, features = [
+    "trace",
+    "rt-tokio",
+] }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = [
+    "trace",
+    "grpc-tonic",
+    "http-proto",
+] }
+tracing-opentelemetry = { version = "0.28", default-features = false }
 
 # Config / CLI
 serde = { version = "1.0", features = ["derive"] }
@@ -132,6 +149,9 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 humantime-serde = "1.1"
+
+# Identifiers
+uuid = { version = "1.11", default-features = false, features = ["std"] }
 
 # Error handling
 thiserror = "2.0"

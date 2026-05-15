@@ -9,30 +9,33 @@
 //! 5. Assemble proxy dependencies.
 //! 6. Bind the HTTP listener and serve until a shutdown signal arrives.
 
-// Transitive dependencies required by the library are not directly referenced
-// from the binary crate; silence the `unused_crate_dependencies` lint for
-// those entries rather than polluting main with `use X as _;` imports.
+// Transitive workspace dependencies pulled in via features are not directly
+// named here; silence the `unused_crate_dependencies` lint for those entries.
 #![allow(
     unused_crate_dependencies,
-    reason = "binary only uses the library re-exports"
+    reason = "binary only uses the corx-core / corx-server re-exports"
 )]
 
+mod cli;
+
 use clap::Parser as _;
-use corx::cli::Cli;
-use corx::config::Config;
-use corx::observability::{init_metrics, init_tracing};
-use corx::server;
+
+use corx_server::config_loader;
+use corx_server::observability::{init_metrics, init_tracing};
+use corx_server::{AppState, ServerBuild, build_router, run};
+
+use crate::cli::Cli;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    run(cli).await
+    run_app(cli).await
 }
 
-async fn run(cli: Cli) -> anyhow::Result<()> {
+async fn run_app(cli: Cli) -> anyhow::Result<()> {
     install_crypto_provider();
 
-    let config = Config::load(cli.config.as_deref())?;
+    let config = config_loader::load(cli.config.as_deref())?;
     init_tracing(&config.observability)?;
     let metrics = init_metrics()?;
 
@@ -42,10 +45,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         "corx starting"
     );
 
-    let build = server::ServerBuild::from_config(config.clone(), metrics)?;
-    let router = server::build_router(server::AppState::new(build));
+    let build = ServerBuild::from_config(config.clone(), metrics)?;
+    let router = build_router(AppState::new(build));
 
-    server::run(&config.server, router).await
+    run(&config.server, router).await
 }
 
 fn install_crypto_provider() {

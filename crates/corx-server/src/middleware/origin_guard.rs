@@ -6,8 +6,8 @@ use foldhash::fast::RandomState;
 use http::header::ORIGIN;
 use http::{HeaderMap, Method};
 
-use crate::config::SecurityConfig;
-use crate::error::ProxyError;
+use corx_core::config::SecurityConfig;
+use corx_core::error::ProxyError;
 
 type OriginSet = HashSet<String, RandomState>;
 
@@ -100,8 +100,9 @@ fn to_origin_set(values: &[String]) -> OriginSet {
 mod tests {
     use http::{HeaderMap, HeaderValue, Method};
 
+    use corx_core::config::SecurityConfig;
+
     use super::OriginPolicy;
-    use crate::config::SecurityConfig;
 
     fn make(cfg: SecurityConfig) -> OriginPolicy {
         OriginPolicy::from_config(&cfg)

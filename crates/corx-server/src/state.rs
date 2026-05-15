@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
-use crate::config::Config;
+use corx_core::config::Config;
+use corx_core::proxy::{CorsPolicy, RequestFilter, ResponseFilter, SsrfGuard, Upstream};
+
 use crate::middleware::{OriginPolicy, RateLimiter, RequestGuard};
 use crate::observability::MetricsHandle;
-use crate::proxy::{CorsPolicy, RequestFilter, ResponseFilter, SsrfGuard, Upstream};
 
 /// All dependencies required by the server, assembled at startup.
 #[derive(Clone, Debug)]
@@ -39,10 +40,10 @@ impl ServerBuild {
         let request_filter = RequestFilter::new(&config.security.remove_request_headers);
         let response_filter = ResponseFilter::new(&config.security.remove_response_headers);
 
-        let resolver = crate::proxy::build_resolver();
+        let resolver = corx_core::proxy::build_resolver();
         let ssrf = SsrfGuard::new(&config.ssrf, resolver);
 
-        let upstream_config = crate::proxy::UpstreamConfig {
+        let upstream_config = corx_core::proxy::UpstreamConfig {
             pool_max_idle_per_host: config.upstream.pool_max_idle_per_host,
             pool_idle_timeout: config.upstream.pool_idle_timeout,
             connect_timeout: config.limits.connect_timeout,

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use http::Method;
 use http::Request;
 
-use crate::error::ProxyError;
+use corx_core::error::ProxyError;
+
 use crate::middleware::{OriginPolicy, RateLimiter};
 
 /// Bundles all synchronous inbound checks into a single entry point so that

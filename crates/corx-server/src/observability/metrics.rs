@@ -1,7 +1,18 @@
 //! Prometheus metrics recorder.
+//!
+//! Metric **names** live in [`corx_core::observability`] so they can be
+//! referenced from the framework-agnostic engine. This module re-exports them
+//! and additionally owns the recorder installation — which is HTTP-stack
+//! specific and therefore lives outside of `corx-core`.
 
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+
+pub use corx_core::observability::{
+    BUILD_INFO, BYTES_TRANSFERRED, CONFIG_RELOAD, DNS_LOOKUPS, INFLIGHT_REQUESTS, RATE_LIMITED,
+    REDIRECT_HOPS, REQUEST_DURATION, REQUESTS_TOTAL, SSRF_BLOCKS, UPSTREAM_DURATION,
+    UPSTREAM_ERRORS, WEBSOCKET_ACTIVE, WEBSOCKET_HANDSHAKES,
+};
 
 /// Handle used to render the Prometheus text exposition on demand.
 #[derive(Clone)]
@@ -22,21 +33,6 @@ impl MetricsHandle {
         self.inner.render()
     }
 }
-
-/// Counter: total inbound requests handled.
-pub const REQUESTS_TOTAL: &str = "corx_requests_total";
-/// Histogram: inbound request duration in seconds.
-pub const REQUEST_DURATION: &str = "corx_request_duration_seconds";
-/// Histogram: upstream request duration in seconds.
-pub const UPSTREAM_DURATION: &str = "corx_upstream_duration_seconds";
-/// Counter: number of upstream failures broken down by reason.
-pub const UPSTREAM_ERRORS: &str = "corx_upstream_errors_total";
-/// Gauge: currently in-flight proxied requests.
-pub const INFLIGHT_REQUESTS: &str = "corx_inflight_requests";
-/// Counter: bytes transferred, keyed by `direction=request|response`.
-pub const BYTES_TRANSFERRED: &str = "corx_bytes_transferred_total";
-/// Counter: requests denied by the rate limiter, keyed by `reason`.
-pub const RATE_LIMITED: &str = "corx_rate_limited_total";
 
 /// Initialises the Prometheus recorder and registers metric descriptions.
 ///

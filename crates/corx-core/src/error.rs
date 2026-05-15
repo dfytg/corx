@@ -4,14 +4,17 @@
 //! surfaced in the `X-Corx-Status` response header as well as the structured
 //! JSON error body. The HTTP status code is derived solely from the kind so
 //! that operators can rely on it for alerting.
+//!
+//! This module is intentionally framework-agnostic: it produces a neutral
+//! [`ErrorPayload`] that the surrounding HTTP stack can render into the
+//! shape it expects. The `corx-server` crate provides an `axum::IntoResponse`
+//! adapter on top of this payload.
 
 use std::io;
 use std::net::IpAddr;
 
-use axum::Json;
-use axum::response::{IntoResponse, Response};
 use http::StatusCode;
-use http::header::{HeaderName, HeaderValue};
+use http::header::HeaderName;
 use serde::Serialize;
 
 /// Header name used to expose the machine-readable error kind.
@@ -175,31 +178,37 @@ impl ProxyError {
     }
 }
 
-/// JSON error body returned to clients.
+/// Neutral, framework-agnostic representation of a proxy error response.
+///
+/// HTTP layer adapters (e.g. `corx-server`) consume this to render an actual
+/// response in whatever shape their framework expects.
 #[derive(Debug, Serialize)]
-struct ErrorBody<'a> {
-    error: &'a str,
-    message: String,
+pub struct ErrorPayload {
+    /// Machine-readable identifier, identical to [`ErrorKind::as_str`].
+    pub error: &'static str,
+    /// Human-readable detail; safe to expose to clients.
+    pub message: String,
 }
 
-impl IntoResponse for ProxyError {
-    fn into_response(self) -> Response {
+impl ProxyError {
+    /// Renders the error into the wire-level pieces required to construct a
+    /// HTTP response: status code and the JSON-serialisable payload.
+    ///
+    /// Adapters typically:
+    ///
+    /// 1. Set the response status to `payload.0`.
+    /// 2. Insert `X-Corx-Status: <payload.1.error>` into the headers.
+    /// 3. Serialise `payload.1` as JSON.
+    /// 4. Apply the active CORS policy on top so the client browser can read it.
+    #[must_use]
+    pub fn to_payload(&self) -> (StatusCode, ErrorPayload) {
         let kind = self.kind();
-        let status = kind.status();
-        tracing::debug!(error.kind = kind.as_str(), error.detail = %self, "request failed");
-
-        let body = ErrorBody {
-            error: kind.as_str(),
-            message: self.to_string(),
-        };
-
-        let mut response = (status, Json(body)).into_response();
-        if let Ok(value) = HeaderValue::from_str(kind.as_str()) {
-            response.headers_mut().insert(STATUS_HEADER, value);
-        }
-        response
+        (
+            kind.status(),
+            ErrorPayload {
+                error: kind.as_str(),
+                message: self.to_string(),
+            },
+        )
     }
 }
-
-/// Convenience alias used throughout the proxy hot path.
-pub type ProxyResult<T> = Result<T, ProxyError>;

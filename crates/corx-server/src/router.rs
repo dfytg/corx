@@ -9,8 +9,8 @@ use http::StatusCode;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::server::handlers;
-use crate::server::state::ServerBuild;
+use crate::handlers;
+use crate::state::ServerBuild;
 
 /// Shared application state injected into every handler.
 #[derive(Clone, Debug)]

@@ -7,7 +7,7 @@ use axum::Router;
 use tokio::net::TcpListener;
 use tokio::signal;
 
-use crate::config::ServerConfig;
+use corx_core::config::ServerConfig;
 
 /// Binds to the configured socket and serves the supplied router until a
 /// shutdown signal is received, then drains in-flight connections within

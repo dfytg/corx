@@ -1,16 +1,9 @@
-//! Configuration loading and domain types.
+//! Configuration domain types and built-in defaults.
 //!
-//! The effective configuration is assembled from three layered sources, in
-//! order of increasing precedence:
-//!
-//! 1. Built-in defaults (see [`Config::defaults`]).
-//! 2. A TOML file discovered at `$CORX_CONFIG`, `./corx.toml`, or
-//!    `/etc/corx/config.toml`.
-//! 3. Environment variables prefixed with `CORX_` (double-underscore for
-//!    nested keys, e.g. `CORX_SERVER__BIND=0.0.0.0:9000`).
-//!
-//! CLI flags (see the [`crate::cli`] module) take the highest precedence and
-//! are merged on top of the loaded configuration at startup.
+//! This module contains *only* the data types and their default values. The
+//! actual layered loader (TOML + environment + CLI overrides) lives in the
+//! `corx-server` crate so that `corx-core` stays free of side-effecting
+//! dependencies and is suitable for embedding into custom hosts.
 
 mod defaults;
 
@@ -18,12 +11,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use figment::Figment;
-use figment::providers::{Env, Format as _, Toml};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
-
-use crate::error::ProxyError;
 
 /// Top-level configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -209,46 +198,6 @@ pub enum LogFormat {
     Pretty,
     /// Structured single-line JSON, one object per event.
     Json,
-}
-
-impl Config {
-    /// Loads configuration from the layered sources described at the module level.
-    ///
-    /// `override_path`, when provided, supersedes the default discovery logic.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the configuration file is present but invalid, or
-    /// when a required file cannot be read.
-    pub fn load(override_path: Option<&std::path::Path>) -> Result<Self, ProxyError> {
-        let mut figment = Figment::from(figment::providers::Serialized::defaults(Self::defaults()));
-
-        if let Some(path) = override_path {
-            figment = figment.merge(Toml::file(path));
-        } else if let Some(path) = Self::discover_config_path() {
-            figment = figment.merge(Toml::file(path));
-        }
-
-        figment = figment.merge(Env::prefixed("CORX_").split("__"));
-
-        figment
-            .extract()
-            .map_err(|err| ProxyError::Internal(anyhow::Error::new(err)))
-    }
-
-    fn discover_config_path() -> Option<PathBuf> {
-        if let Ok(from_env) = std::env::var("CORX_CONFIG")
-            && !from_env.is_empty()
-        {
-            return Some(PathBuf::from(from_env));
-        }
-
-        let candidates = ["corx.toml", "/etc/corx/config.toml"];
-        candidates
-            .iter()
-            .map(PathBuf::from)
-            .find(|path| path.is_file())
-    }
 }
 
 impl Default for Config {

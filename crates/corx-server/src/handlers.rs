@@ -1,17 +1,17 @@
 //! HTTP handlers: the proxy endpoint and the operational endpoints.
 
+use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use axum::Json;
 use axum::body::Body as AxumBody;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::response::{IntoResponse as _, Response};
+use corx_core::error::ProxyError;
+use corx_core::proxy::{self, InboundContext, TargetUrl, UpstreamBody, is_preflight};
 use http::header::HeaderName;
 use http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use http_body_util::BodyExt as _;
-
-use corx_core::error::ProxyError;
-use corx_core::proxy::{self, TargetUrl, UpstreamBody, is_preflight};
 
 use crate::error::ServerError;
 use crate::observability::metrics as stats;
@@ -72,6 +72,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
 /// Primary proxy handler, bound to any path matching `/*path`.
 pub(crate) async fn proxy(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request<AxumBody>,
 ) -> Result<Response, ServerError> {
     let started = Instant::now();
@@ -80,7 +81,7 @@ pub(crate) async fn proxy(
 
     let decrement_inflight = InflightGuard;
 
-    let outcome = serve(state, request).await;
+    let outcome = serve(state, request, peer.ip()).await;
 
     match &outcome {
         Ok(response) => {
@@ -114,7 +115,11 @@ impl Drop for InflightGuard {
     }
 }
 
-async fn serve(state: AppState, request: Request<AxumBody>) -> Result<Response, ServerError> {
+async fn serve(
+    state: AppState,
+    request: Request<AxumBody>,
+    client_ip: IpAddr,
+) -> Result<Response, ServerError> {
     // Inbound guards (origin, rate-limit, required headers, blocked methods).
     if !is_preflight(&request) {
         state.build.guard.evaluate(&request)?;
@@ -131,20 +136,50 @@ async fn serve(state: AppState, request: Request<AxumBody>) -> Result<Response, 
     // Extract and validate the upstream target URL.
     let target = proxy::extract_target(request.uri())?;
 
-    execute_proxy(state, request, target).await
+    execute_proxy(state, request, target, client_ip).await
 }
 
 async fn execute_proxy(
     state: AppState,
     request: Request<AxumBody>,
     target: TargetUrl,
+    client_ip: IpAddr,
 ) -> Result<Response, ServerError> {
+    let inbound_scheme = request
+        .uri()
+        .scheme_str()
+        .filter(|s| !s.is_empty())
+        .map_or_else(
+            || if state.build.config.server.tls.is_some() { "https" } else { "http" }.to_owned(),
+            str::to_owned,
+        );
+    let inbound_host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let local_port = state.build.config.server.bind.port();
+
     let (mut parts, body) = request.into_parts();
     // Preserve inbound headers so that CORS can still reflect the original
     // Origin after the request has been consumed by the upstream client.
     let inbound_headers = parts.headers.clone();
 
     state.build.request_filter.apply(&mut parts.headers);
+
+    let inbound = InboundContext {
+        client_ip: Some(client_ip),
+        scheme: inbound_scheme.as_str(),
+        host: inbound_host.as_deref(),
+        local_port,
+    };
+    proxy::inject_forwarded(
+        &mut parts.headers,
+        inbound,
+        &target,
+        &state.build.config.forwarded,
+    );
+
     inject_default_user_agent(&mut parts.headers, state.build.upstream.user_agent());
     set_host_from_target(&mut parts.headers, &target);
 
@@ -190,26 +225,12 @@ fn shape_response(
 
     let mut reassembled = hyper::Response::from_parts(parts, body);
 
-    // Apply CORS last so its headers win on collisions. A synthetic request
-    // wrapping the original request headers lets CORS reflect the Origin.
-    let synthetic_request = synthesise_request(request_headers);
-    proxy::apply_response_headers(
-        &mut reassembled,
-        &synthetic_request,
-        state.build.cors.as_ref(),
-    );
+    // Apply CORS last so its headers win on collisions.
+    proxy::apply_to_response(&mut reassembled, request_headers, state.build.cors.as_ref());
 
     let (parts, body) = reassembled.into_parts();
     let axum_body = AxumBody::new(body.map_err(axum::Error::new));
     Ok(Response::from_parts(parts, axum_body))
-}
-
-fn synthesise_request(headers: &HeaderMap) -> Request<()> {
-    let mut builder = Request::builder();
-    if let Some(builder_headers) = builder.headers_mut() {
-        builder_headers.extend(headers.clone());
-    }
-    builder.body(()).unwrap_or_else(|_| Request::new(()))
 }
 
 fn inject_default_user_agent(headers: &mut HeaderMap, default_ua: &str) {
@@ -222,9 +243,10 @@ fn inject_default_user_agent(headers: &mut HeaderMap, default_ua: &str) {
 }
 
 fn set_host_from_target(headers: &mut HeaderMap, target: &TargetUrl) {
-    let authority = target
-        .url
-        .port().map_or_else(|| target.host.clone(), |port| format!("{}:{port}", target.host));
+    let authority = target.url.port().map_or_else(
+        || target.host.clone(),
+        |port| format!("{}:{port}", target.host),
+    );
     if let Ok(value) = HeaderValue::from_str(&authority) {
         headers.insert(header::HOST, value);
     }

@@ -4,8 +4,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use super::{
-    Config, CorsConfig, CorsPolicyKind, LimitsConfig, LogFormat, ObservabilityConfig,
-    RateLimitConfig, SecurityConfig, ServerConfig, SsrfConfig, UpstreamConfig,
+    Config, CorsConfig, CorsPolicyKind, ForwardedConfig, LimitsConfig, LogFormat,
+    ObservabilityConfig, RateLimitConfig, SecurityConfig, ServerConfig, SsrfConfig, SsrfMode,
+    UpstreamConfig,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -29,13 +30,18 @@ impl Config {
                 request_timeout: Duration::from_mins(1),
                 connect_timeout: Duration::from_secs(10),
                 max_redirects: 5,
+                allow_https_to_http_downgrade: false,
             },
             cors: CorsConfig {
                 policy: CorsPolicyKind::Reflect,
                 allowlist: Vec::new(),
                 explicit: Vec::new(),
+                allowed_methods: super::default_allowed_methods(),
+                allowed_headers: super::default_allowed_headers(),
+                exposed_headers: super::default_exposed_headers(),
                 max_age: Duration::from_mins(10),
                 allow_credentials: false,
+                allow_private_network: false,
             },
             security: SecurityConfig {
                 require_header: vec!["origin".into()],
@@ -46,10 +52,13 @@ impl Config {
                 origin_whitelist: Vec::new(),
             },
             ssrf: SsrfConfig {
-                enabled: true,
-                extra_blocked_cidrs: Vec::new(),
+                mode: SsrfMode::Strict,
                 allow_ipv6: true,
+                extra_blocked_cidrs: Vec::new(),
+                extra_allowed_cidrs: Vec::new(),
+                deny_redirect_to_private: true,
             },
+            forwarded: ForwardedConfig::default(),
             rate_limit: RateLimitConfig {
                 enabled: false,
                 per_origin_rps: 10,

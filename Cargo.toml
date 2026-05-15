@@ -151,7 +151,13 @@ clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 humantime-serde = "1.1"
 
 # Identifiers
-uuid = { version = "1.11", default-features = false, features = ["std"] }
+uuid = { version = "1.11", default-features = false, features = [
+    "std",
+    "v7",
+    "rng",
+    "fast-rng",
+    "serde",
+] }
 
 # Error handling
 thiserror = "2.0"

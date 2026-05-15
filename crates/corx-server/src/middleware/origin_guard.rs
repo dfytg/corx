@@ -2,12 +2,11 @@
 
 use std::collections::HashSet;
 
+use corx_core::config::SecurityConfig;
+use corx_core::error::ProxyError;
 use foldhash::fast::RandomState;
 use http::header::ORIGIN;
 use http::{HeaderMap, Method};
-
-use corx_core::config::SecurityConfig;
-use corx_core::error::ProxyError;
 
 type OriginSet = HashSet<String, RandomState>;
 
@@ -98,9 +97,8 @@ fn to_origin_set(values: &[String]) -> OriginSet {
 
 #[cfg(test)]
 mod tests {
-    use http::{HeaderMap, HeaderValue, Method};
-
     use corx_core::config::SecurityConfig;
+    use http::{HeaderMap, HeaderValue, Method};
 
     use super::OriginPolicy;
 

@@ -12,9 +12,8 @@
 
 use axum::Json;
 use axum::response::{IntoResponse, Response};
-use http::HeaderValue;
-
 use corx_core::error::{ProxyError, STATUS_HEADER};
+use http::HeaderValue;
 
 /// Newtype wrapper that lifts a [`ProxyError`] into an `axum::IntoResponse`.
 ///

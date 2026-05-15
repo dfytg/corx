@@ -2,10 +2,9 @@
 
 use std::sync::Arc;
 
+use corx_core::error::ProxyError;
 use http::Method;
 use http::Request;
-
-use corx_core::error::ProxyError;
 
 use crate::middleware::{OriginPolicy, RateLimiter};
 

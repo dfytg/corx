@@ -6,13 +6,12 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use corx_core::config::RateLimitConfig;
+use corx_core::error::ProxyError;
 use governor::clock::{Clock as _, QuantaClock};
 use governor::state::keyed::DashMapStateStore;
 use governor::{Quota, RateLimiter as GovRateLimiter};
 use regex::RegexSet;
-
-use corx_core::config::RateLimitConfig;
-use corx_core::error::ProxyError;
 
 type Limiter = GovRateLimiter<String, DashMapStateStore<String>, QuantaClock>;
 

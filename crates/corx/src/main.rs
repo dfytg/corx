@@ -19,7 +19,6 @@
 mod cli;
 
 use clap::Parser as _;
-
 use corx_server::config_loader;
 use corx_server::observability::{init_metrics, init_tracing};
 use corx_server::{AppState, ServerBuild, build_router, run};

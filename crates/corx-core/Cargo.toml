@@ -42,8 +42,13 @@ percent-encoding = { workspace = true }
 
 foldhash = { workspace = true }
 
+metrics = { workspace = true }
+tracing = { workspace = true }
+
 serde = { workspace = true }
 humantime-serde = { workspace = true }
+
+uuid = { workspace = true }
 
 thiserror = { workspace = true }
 anyhow = { workspace = true }

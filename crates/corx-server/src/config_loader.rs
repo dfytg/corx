@@ -14,20 +14,41 @@
 
 use std::path::{Path, PathBuf};
 
+use corx_core::config::Config;
 use figment::Figment;
 use figment::providers::{Env, Format as _, Serialized, Toml};
 
-use corx_core::config::Config;
-
-/// Loads the layered configuration.
+/// Loads the layered configuration *and* runs the semantic validator.
 ///
 /// `override_path`, when provided, supersedes the default discovery logic.
 ///
 /// # Errors
 ///
 /// Returns an error when the configuration file is present but invalid or
-/// cannot be read, or when an environment override cannot be parsed.
+/// cannot be read, when an environment override cannot be parsed, or when
+/// any [`corx_core::config::ConfigError`] surfaces during validation. Any
+/// validation warnings are emitted via `tracing::warn!` so operators see
+/// them without aborting startup.
 pub fn load(override_path: Option<&Path>) -> anyhow::Result<Config> {
+    let config = load_raw(override_path)?;
+    let report = config.validate_full();
+    for warn in &report.warnings {
+        tracing::warn!(path = %warn.path, reason = %warn.reason, "config warning");
+    }
+    if let Some(err) = report.errors.into_iter().next() {
+        return Err(err.into());
+    }
+    Ok(config)
+}
+
+/// Loads the configuration **without** running the validator. Useful for
+/// `corx dump-config`, where the operator wants to see the merged result
+/// even if it would fail validation.
+///
+/// # Errors
+///
+/// Same I/O / parsing errors as [`load`].
+pub fn load_raw(override_path: Option<&Path>) -> anyhow::Result<Config> {
     let mut figment = Figment::from(Serialized::defaults(Config::default()));
 
     if let Some(path) = override_path {

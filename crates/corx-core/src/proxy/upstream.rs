@@ -25,7 +25,8 @@ use hyper_util::rt::TokioExecutor;
 use tower::Service;
 
 use crate::error::ProxyError;
-use crate::proxy::redirect;
+use crate::observability;
+use crate::proxy::redirect::{self, NextHop};
 use crate::proxy::ssrf::SsrfGuard;
 
 /// Client-side body type used by the upstream client.
@@ -49,6 +50,8 @@ pub struct UpstreamConfig {
     pub connect_timeout: Duration,
     /// Maximum number of redirects to follow.
     pub max_redirects: u8,
+    /// Allow `https \u2192 http` redirect downgrades. Default: `false`.
+    pub allow_https_to_http_downgrade: bool,
     /// Default User-Agent.
     pub user_agent: String,
 }
@@ -124,7 +127,13 @@ impl Upstream {
         request: Request<UpstreamBody>,
     ) -> Result<hyper::Response<Incoming>, ProxyError> {
         let max_redirects = self.config.max_redirects;
+        let allow_downgrade = self.config.allow_https_to_http_downgrade;
         let (mut state, first_request) = split_initial(request);
+        let target_host = state
+            .uri
+            .host()
+            .map(str::to_owned)
+            .unwrap_or_else(|| "unknown".to_owned());
         let mut hops: u8 = 0;
         let mut next_request = first_request;
 
@@ -136,17 +145,30 @@ impl Upstream {
                 .map_err(|err| ProxyError::Upstream(Box::new(err)))?;
 
             if !redirect::is_redirect(response.status()) {
+                metrics::histogram!(
+                    observability::REDIRECT_HOPS,
+                    "target_host" => target_host.clone(),
+                )
+                .record(f64::from(hops));
                 return Ok(response);
             }
             if hops >= max_redirects {
                 return Err(ProxyError::TooManyRedirects(max_redirects));
             }
-            match redirect::prepare_next(&mut state, &response)? {
-                Some(req) => {
+            match redirect::prepare_next(&mut state, &response, allow_downgrade)? {
+                NextHop::Continue(req) => {
                     next_request = req;
                     hops = hops.saturating_add(1);
                 }
-                None => return Ok(response),
+                NextHop::Stop(reason) => {
+                    tracing::debug!(reason, hops, "stopping redirect chain");
+                    metrics::histogram!(
+                        observability::REDIRECT_HOPS,
+                        "target_host" => target_host.clone(),
+                    )
+                    .record(f64::from(hops));
+                    return Ok(response);
+                }
             }
         }
     }
@@ -205,22 +227,29 @@ impl Service<Name> for GuardedResolver {
         let guard = Arc::clone(&self.guard);
         Box::pin(async move {
             let host = name.as_str().to_owned();
-            let addr = guard.resolve(&host, 0).await?;
-            Ok(GuardedAddrs { addr: Some(addr) })
+            let addrs = guard.resolve(&host, 0).await?;
+            Ok(GuardedAddrs::new(addrs))
         })
     }
 }
 
-/// Iterator yielding a single, pre-validated [`SocketAddr`].
-#[derive(Debug, Clone, Copy)]
-pub struct GuardedAddrs {
-    addr: Option<SocketAddr>,
+/// Iterator yielding pre-validated, SSRF-safe [`SocketAddr`] candidates.
+///
+/// hyper's connector iterates this list to perform happy-eyeballs fallback
+/// between IPv4/IPv6 addresses returned by DNS.
+#[derive(Debug)]
+pub struct GuardedAddrs(std::vec::IntoIter<SocketAddr>);
+
+impl GuardedAddrs {
+    fn new(addrs: Vec<SocketAddr>) -> Self {
+        Self(addrs.into_iter())
+    }
 }
 
 impl Iterator for GuardedAddrs {
     type Item = SocketAddr;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.addr.take()
+        self.0.next()
     }
 }

@@ -4,10 +4,9 @@
 use std::net::SocketAddr;
 
 use axum::Router;
+use corx_core::config::ServerConfig;
 use tokio::net::TcpListener;
 use tokio::signal;
-
-use corx_core::config::ServerConfig;
 
 /// Binds to the configured socket and serves the supplied router until a
 /// shutdown signal is received, then drains in-flight connections within

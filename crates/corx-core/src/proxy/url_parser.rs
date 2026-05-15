@@ -127,6 +127,10 @@ fn normalize_scheme(raw: &str) -> Result<String, ProxyError> {
     Ok(format!("{scheme}://{raw}"))
 }
 
+/// Maximum length, in bytes, of a punycode-encoded hostname. Longer hosts
+/// are rejected to defend against punycode-expansion DoS.
+const MAX_HOST_LEN: usize = 253;
+
 fn validate(mut parsed: Url) -> Result<TargetUrl, ProxyError> {
     match parsed.scheme() {
         "http" | "https" => {}
@@ -135,6 +139,22 @@ fn validate(mut parsed: Url) -> Result<TargetUrl, ProxyError> {
                 "unsupported scheme `{other}`"
             )));
         }
+    }
+
+    // Reject embedded credentials so they cannot leak through logs or
+    // forwarded headers. cors-anywhere did not enforce this.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ProxyError::InvalidUrl(
+            "embedded credentials (`user:pass@`) are not permitted".to_owned(),
+        ));
+    }
+
+    // Fragments are client-side-only; forwarding them upstream is a leak and
+    // confuses caches.
+    if parsed.fragment().is_some() {
+        return Err(ProxyError::InvalidUrl(
+            "fragment identifiers are not permitted in proxy targets".to_owned(),
+        ));
     }
 
     let host = parsed
@@ -148,6 +168,11 @@ fn validate(mut parsed: Url) -> Result<TargetUrl, ProxyError> {
     let ascii_host = idna::domain_to_ascii_cow(host.as_bytes(), idna::AsciiDenyList::URL)
         .map_err(|err| ProxyError::InvalidUrl(format!("invalid IDN host: {err}")))?
         .into_owned();
+    if ascii_host.len() > MAX_HOST_LEN {
+        return Err(ProxyError::InvalidUrl(format!(
+            "hostname exceeds {MAX_HOST_LEN} bytes after punycode encoding"
+        )));
+    }
     if ascii_host != host {
         parsed
             .set_host(Some(&ascii_host))
@@ -216,5 +241,17 @@ mod tests {
     fn idn_host_is_punycoded() {
         let target = extract_target(&uri("/https://münchen.de/")).unwrap();
         assert_eq!(target.host, "xn--mnchen-3ya.de");
+    }
+
+    #[test]
+    fn embedded_userinfo_is_rejected() {
+        let err = extract_target(&uri("/https://user:pass@example.com/")).unwrap_err();
+        assert!(matches!(err, super::ProxyError::InvalidUrl(_)));
+    }
+
+    #[test]
+    fn embedded_username_only_is_rejected() {
+        let err = extract_target(&uri("/https://admin@example.com/")).unwrap_err();
+        assert!(matches!(err, super::ProxyError::InvalidUrl(_)));
     }
 }

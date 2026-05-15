@@ -48,6 +48,7 @@ impl ServerBuild {
             pool_idle_timeout: config.upstream.pool_idle_timeout,
             connect_timeout: config.limits.connect_timeout,
             max_redirects: config.limits.max_redirects,
+            allow_https_to_http_downgrade: config.limits.allow_https_to_http_downgrade,
             user_agent: config.upstream.user_agent.clone(),
         };
         let upstream = Upstream::new(upstream_config, ssrf)?;

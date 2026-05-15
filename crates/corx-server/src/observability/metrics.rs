@@ -5,14 +5,13 @@
 //! and additionally owns the recorder installation — which is HTTP-stack
 //! specific and therefore lives outside of `corx-core`.
 
-use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-
 pub use corx_core::observability::{
     BUILD_INFO, BYTES_TRANSFERRED, CONFIG_RELOAD, DNS_LOOKUPS, INFLIGHT_REQUESTS, RATE_LIMITED,
     REDIRECT_HOPS, REQUEST_DURATION, REQUESTS_TOTAL, SSRF_BLOCKS, UPSTREAM_DURATION,
     UPSTREAM_ERRORS, WEBSOCKET_ACTIVE, WEBSOCKET_HANDSHAKES,
 };
+use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
 /// Handle used to render the Prometheus text exposition on demand.
 #[derive(Clone)]

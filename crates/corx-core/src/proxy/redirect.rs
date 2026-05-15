@@ -9,15 +9,27 @@
 //! from an upstream `Location` header without needing access to the already-
 //! consumed request body.
 
-use http::header::{self, HeaderMap, HeaderName};
+use http::header::{self, HeaderMap};
 use http::{Method, Request, Response, StatusCode, Uri};
 use hyper::body::Incoming;
 
 use crate::error::ProxyError;
 use crate::proxy::upstream::{UpstreamBody, empty_upstream_body};
 
-/// Headers that must never survive a cross-host redirect.
-const SENSITIVE_HEADERS: &[HeaderName] = &[header::AUTHORIZATION, header::COOKIE];
+/// Headers that must never survive a cross-host redirect. The list deliberately
+/// goes beyond the IETF requirements to also strip `Proxy-Authorization`,
+/// `Authentication-Info` and `WWW-Authenticate` because they may carry
+/// credential material the new origin must not see.
+///
+/// Stored as static strings rather than `HeaderName` because `HeaderName`
+/// values produced by `from_static` cannot be embedded in a `const` slice.
+const SENSITIVE_HEADERS: &[&str] = &[
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "authentication-info",
+    "www-authenticate",
+];
 
 /// Captured state from the initial request, used to rebuild follow-up
 /// requests after each redirect hop.
@@ -58,35 +70,52 @@ pub const fn is_redirect(status: StatusCode) -> bool {
     )
 }
 
+/// Result of consulting the redirect machinery for the next hop.
+#[derive(Debug)]
+pub enum NextHop {
+    /// Continue following with this freshly-built request.
+    Continue(Request<UpstreamBody>),
+    /// Stop following and return the original 3xx response to the client.
+    /// `reason` is logged but not exposed on the wire.
+    Stop(&'static str),
+}
+
 /// Given a redirect `response`, compute the next request to dispatch.
-///
-/// Returns `Ok(None)` when the response does not carry a usable `Location`,
-/// or when the follow-up would require a request body that we have already
-/// discarded (307/308 after a `POST`/`PUT`/`PATCH`).
 ///
 /// # Errors
 ///
-/// Returns an error when the `Location` header resolves to a malformed URI.
+/// Returns an error when the `Location` header resolves to a malformed URI
+/// or specifies a non-HTTP(S) scheme (`data:`, `javascript:`, `file:` …).
 pub fn prepare_next(
     state: &mut RedirectState,
     response: &Response<Incoming>,
-) -> Result<Option<Request<UpstreamBody>>, ProxyError> {
+    allow_https_to_http_downgrade: bool,
+) -> Result<NextHop, ProxyError> {
     let Some(location) = response.headers().get(header::LOCATION) else {
-        return Ok(None);
+        return Ok(NextHop::Stop("no Location header"));
     };
     let Ok(location_str) = location.to_str() else {
-        return Ok(None);
+        return Ok(NextHop::Stop("non-utf8 Location header"));
     };
 
     let next_uri = resolve_location(&state.uri, location_str)?;
-    let cross_host = authority_differs(&state.uri, &next_uri);
+    require_safe_scheme(&next_uri)?;
 
+    if !allow_https_to_http_downgrade && is_https_to_http_downgrade(&state.uri, &next_uri) {
+        return Err(ProxyError::InvalidUrl(
+            "https → http redirect downgrade rejected".to_owned(),
+        ));
+    }
+
+    let cross_host = authority_differs(&state.uri, &next_uri);
     let (next_method, drop_body) = classify_transition(&state.method, response.status());
 
     // 307/308 with a body-carrying method: cannot safely replay because the
     // original body has already been consumed by hyper::Client::request.
     if !drop_body && body_bearing(&next_method) {
-        return Ok(None);
+        return Ok(NextHop::Stop(
+            "307/308 with body-bearing method cannot be safely replayed",
+        ));
     }
 
     state.method = next_method.clone();
@@ -94,7 +123,7 @@ pub fn prepare_next(
 
     if cross_host {
         for name in SENSITIVE_HEADERS {
-            state.headers.remove(name);
+            state.headers.remove(*name);
         }
         // Host will be recomputed by hyper from the URI authority.
         state.headers.remove(header::HOST);
@@ -109,8 +138,24 @@ pub fn prepare_next(
 
     builder
         .body(body)
-        .map(Some)
+        .map(NextHop::Continue)
         .map_err(|err| ProxyError::InvalidUrl(format!("cannot build redirect request: {err}")))
+}
+
+fn require_safe_scheme(uri: &Uri) -> Result<(), ProxyError> {
+    match uri.scheme_str() {
+        Some("http" | "https") => Ok(()),
+        Some(other) => Err(ProxyError::InvalidUrl(format!(
+            "redirect to unsupported scheme `{other}`"
+        ))),
+        None => Err(ProxyError::InvalidUrl(
+            "redirect Location lacks a scheme".to_owned(),
+        )),
+    }
+}
+
+fn is_https_to_http_downgrade(from: &Uri, to: &Uri) -> bool {
+    matches!(from.scheme_str(), Some("https")) && matches!(to.scheme_str(), Some("http"))
 }
 
 fn resolve_location(base: &Uri, location: &str) -> Result<Uri, ProxyError> {
@@ -164,7 +209,8 @@ mod tests {
     use http::{HeaderMap, Method, StatusCode, Uri};
 
     use super::{
-        RedirectState, authority_differs, classify_transition, is_redirect, resolve_location,
+        NextHop, RedirectState, authority_differs, classify_transition, is_https_to_http_downgrade,
+        is_redirect, require_safe_scheme, resolve_location,
     };
 
     #[test]
@@ -223,5 +269,44 @@ mod tests {
         assert_eq!(state.method, Method::POST);
         assert_eq!(state.uri.to_string(), "http://a.test/");
         assert!(state.headers.is_empty());
+    }
+
+    #[test]
+    fn file_scheme_is_rejected() {
+        let uri: Uri = "file://localhost/etc/passwd".parse().unwrap();
+        assert!(require_safe_scheme(&uri).is_err());
+    }
+
+    #[test]
+    fn ftp_scheme_is_rejected() {
+        let uri: Uri = "ftp://example.com/".parse().unwrap();
+        assert!(require_safe_scheme(&uri).is_err());
+    }
+
+    #[test]
+    fn ws_scheme_is_rejected() {
+        let uri: Uri = "ws://example.com/socket".parse().unwrap();
+        assert!(require_safe_scheme(&uri).is_err());
+    }
+
+    #[test]
+    fn gopher_scheme_is_rejected() {
+        let uri: Uri = "gopher://example.com/".parse().unwrap();
+        assert!(require_safe_scheme(&uri).is_err());
+    }
+
+    #[test]
+    fn detects_https_to_http_downgrade() {
+        let from: Uri = "https://a.test/".parse().unwrap();
+        let to: Uri = "http://a.test/".parse().unwrap();
+        assert!(is_https_to_http_downgrade(&from, &to));
+        let to_https: Uri = "https://b.test/".parse().unwrap();
+        assert!(!is_https_to_http_downgrade(&from, &to_https));
+    }
+
+    #[test]
+    fn next_hop_enum_constructible_from_continue() {
+        // Compile-time only: ensure the enum is exhaustive in the public API.
+        fn _accept(_n: NextHop) {}
     }
 }

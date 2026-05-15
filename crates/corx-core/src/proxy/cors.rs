@@ -1,9 +1,21 @@
-//! CORS policy implementation.
+//! CORS policy implementation (v2).
 //!
 //! This module produces the response headers required to satisfy the CORS
-//! protocol on both preflight (`OPTIONS`) and actual responses. The set of
-//! admitted origins is driven by [`CorsPolicy`], a compiled representation of
-//! the operator-supplied configuration.
+//! protocol on every reply leaving the proxy:
+//!
+//! * **Preflights** — a synthetic `204 No Content` response with the full
+//!   `Access-Control-Allow-{Origin,Methods,Headers}` triple, the configured
+//!   `Access-Control-Max-Age`, and — when [`CorsConfig::allow_private_network`]
+//!   is on — the Private Network Access (PNA) handshake.
+//! * **Real responses** — the upstream's headers are replaced by the
+//!   policy-derived values so browsers cannot be confused by conflicting
+//!   instructions from the upstream.
+//! * **Error responses** — the same headers are stamped onto the JSON error
+//!   payloads constructed in [`crate::error`] so cross-origin failures stay
+//!   readable to the calling browser.
+//!
+//! All three paths route through [`apply_to_response`] / [`apply_to_error_response`]
+//! to keep the policy in one place.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -16,6 +28,13 @@ use http_body_util::Empty;
 
 use crate::config::{CorsConfig, CorsPolicyKind};
 
+/// Header used by browsers to opt into Private Network Access preflights
+/// when the page origin is on a more-private network than the target.
+const ACR_PRIVATE_NETWORK: HeaderName =
+    HeaderName::from_static("access-control-request-private-network");
+const ACA_PRIVATE_NETWORK: HeaderName =
+    HeaderName::from_static("access-control-allow-private-network");
+
 type OriginSet = HashSet<String, RandomState>;
 
 /// Response body type used for short-lived responses constructed inside this module.
@@ -25,8 +44,12 @@ pub type StaticBody = Empty<Bytes>;
 #[derive(Debug, Clone)]
 pub struct CorsPolicy {
     mode: PolicyMode,
-    max_age: Duration,
+    allowed_methods: Option<HeaderValue>,
+    allowed_headers: Option<HeaderValue>,
+    exposed_headers: Option<HeaderValue>,
+    max_age_value: Option<HeaderValue>,
     allow_credentials: bool,
+    allow_private_network: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -55,16 +78,41 @@ impl CorsPolicy {
 
         Self {
             mode,
-            max_age: cfg.max_age,
+            allowed_methods: encode_token_list(&cfg.allowed_methods),
+            allowed_headers: encode_token_list(&cfg.allowed_headers),
+            exposed_headers: encode_token_list(&cfg.exposed_headers),
+            max_age_value: encode_max_age(cfg.max_age),
             allow_credentials: cfg.allow_credentials,
+            allow_private_network: cfg.allow_private_network,
         }
+    }
+
+    /// Returns `true` when the policy is willing to emit credentials for
+    /// cross-origin requests. Used by handlers to mirror state into other
+    /// response paths (e.g. WebSocket upgrade).
+    #[must_use]
+    pub const fn allow_credentials(&self) -> bool {
+        self.allow_credentials
     }
 
     /// Resolves the `Access-Control-Allow-Origin` value to use for a given
     /// request. Returns `None` when the request origin is not permitted.
+    ///
+    /// Browsers reject `Access-Control-Allow-Origin: *` together with
+    /// `Access-Control-Allow-Credentials: true`; whenever credentials are on
+    /// we therefore reflect the request origin (degraded wildcard) so that
+    /// the response remains semantically valid.
     fn resolve_allow_origin(&self, request_origin: Option<&HeaderValue>) -> Option<HeaderValue> {
         match &self.mode {
-            PolicyMode::Wildcard => Some(HeaderValue::from_static("*")),
+            PolicyMode::Wildcard => {
+                if self.allow_credentials {
+                    request_origin
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|s| HeaderValue::from_str(s).ok())
+                } else {
+                    Some(HeaderValue::from_static("*"))
+                }
+            }
             PolicyMode::Reflect(allow) => {
                 let origin = request_origin?.to_str().ok()?;
                 match allow {
@@ -101,31 +149,46 @@ pub fn build_preflight_response<B>(req: &Request<B>, policy: &CorsPolicy) -> Res
         .body(Empty::<Bytes>::new())
         .unwrap_or_else(|_| Response::new(Empty::<Bytes>::new()));
 
-    apply_cors_base(response.headers_mut(), req.headers(), policy);
-
     let request_headers = req.headers();
+    let response_headers = response.headers_mut();
 
-    if let Some(acrm) = request_headers.get(header::ACCESS_CONTROL_REQUEST_METHOD)
+    apply_cors_base(response_headers, request_headers, policy);
+
+    // Allowed methods: the configured allowlist takes precedence over echoing
+    // the request method. Echoing only happens when the operator left the
+    // list empty (a deliberate "trust the upstream" stance).
+    if let Some(value) = policy.allowed_methods.as_ref() {
+        response_headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, value.clone());
+    } else if let Some(acrm) = request_headers.get(header::ACCESS_CONTROL_REQUEST_METHOD)
         && let Ok(value) = HeaderValue::from_bytes(acrm.as_bytes())
     {
-        response
-            .headers_mut()
-            .insert(header::ACCESS_CONTROL_ALLOW_METHODS, value);
+        response_headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, value);
     }
 
-    if let Some(acrh) = request_headers.get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+    // Allowed headers follow the same logic.
+    if let Some(value) = policy.allowed_headers.as_ref() {
+        response_headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, value.clone());
+    } else if let Some(acrh) = request_headers.get(header::ACCESS_CONTROL_REQUEST_HEADERS)
         && let Ok(value) = HeaderValue::from_bytes(acrh.as_bytes())
     {
-        response
-            .headers_mut()
-            .insert(header::ACCESS_CONTROL_ALLOW_HEADERS, value);
+        response_headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, value);
     }
 
-    if let Ok(value) = HeaderValue::from_str(&policy.max_age.as_secs().to_string()) {
-        response
-            .headers_mut()
-            .insert(header::ACCESS_CONTROL_MAX_AGE, value);
+    if let Some(value) = policy.max_age_value.as_ref() {
+        response_headers.insert(header::ACCESS_CONTROL_MAX_AGE, value.clone());
     }
+
+    // Private Network Access handshake (Chromium et al.).
+    if policy.allow_private_network && request_headers.get(&ACR_PRIVATE_NETWORK).is_some() {
+        response_headers.insert(
+            ACA_PRIVATE_NETWORK.clone(),
+            HeaderValue::from_static("true"),
+        );
+    }
+
+    // Preflights vary on the request method and headers in addition to origin.
+    append_vary(response_headers, "access-control-request-method");
+    append_vary(response_headers, "access-control-request-headers");
 
     response
 }
@@ -135,16 +198,27 @@ pub fn build_preflight_response<B>(req: &Request<B>, policy: &CorsPolicy) -> Res
 /// Existing CORS headers produced by the upstream are replaced with values
 /// derived from the configured policy, preventing conflicts that browsers
 /// reject.
-pub fn apply_response_headers<B>(
+pub fn apply_to_response<B>(
     response: &mut Response<B>,
-    request: &Request<impl Sized>,
+    request_headers: &HeaderMap,
     policy: &CorsPolicy,
 ) {
-    apply_cors_base(response.headers_mut(), request.headers(), policy);
-    response.headers_mut().insert(
-        header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        HeaderValue::from_static("*"),
-    );
+    let response_headers = response.headers_mut();
+    apply_cors_base(response_headers, request_headers, policy);
+    if let Some(value) = policy.exposed_headers.as_ref() {
+        response_headers.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, value.clone());
+    }
+}
+
+/// Apply CORS headers to a synthesised error response so cross-origin error
+/// payloads remain visible to the browser. Mirrors [`apply_to_response`] but
+/// is exposed under a distinct name so call sites read clearly.
+pub fn apply_to_error_response<B>(
+    response: &mut Response<B>,
+    request_headers: &HeaderMap,
+    policy: &CorsPolicy,
+) {
+    apply_to_response(response, request_headers, policy);
 }
 
 /// Determine whether the request is a CORS preflight.
@@ -164,6 +238,9 @@ fn apply_cors_base(
 ) {
     let origin = request_headers.get(header::ORIGIN);
     let Some(allow_origin) = policy.resolve_allow_origin(origin) else {
+        // Origin not admitted — still record `Vary: origin` so caches do not
+        // serve a stale allow-origin response to a different caller.
+        append_vary(response_headers, "origin");
         return;
     };
 
@@ -176,13 +253,23 @@ fn apply_cors_base(
         );
     }
 
-    // Vary on Origin whenever the response depends on it so caches behave correctly.
-    match &policy.mode {
-        PolicyMode::Wildcard => {}
-        PolicyMode::Reflect(_) | PolicyMode::Explicit(_) => {
-            append_vary(response_headers, "origin");
-        }
+    // Always Vary on Origin so caches behave correctly. The previous
+    // wildcard-only fast path leaked behaviour when a future config reload
+    // narrowed the policy.
+    append_vary(response_headers, "origin");
+}
+
+fn encode_token_list(values: &[String]) -> Option<HeaderValue> {
+    if values.is_empty() {
+        return None;
     }
+    let joined = values.join(", ");
+    HeaderValue::from_str(&joined).ok()
+}
+
+fn encode_max_age(duration: Duration) -> Option<HeaderValue> {
+    let secs = duration.as_secs();
+    HeaderValue::from_str(&secs.to_string()).ok()
 }
 
 fn append_vary(headers: &mut HeaderMap, value: &'static str) {
@@ -213,7 +300,7 @@ fn append_vary(headers: &mut HeaderMap, value: &'static str) {
 mod tests {
     use http::{Method, Request};
 
-    use super::{CorsPolicy, apply_response_headers, build_preflight_response, is_preflight};
+    use super::{CorsPolicy, apply_to_response, build_preflight_response, is_preflight};
     use crate::config::{CorsConfig, CorsPolicyKind};
 
     fn policy(kind: CorsPolicyKind, allowlist: Vec<String>, explicit: Vec<String>) -> CorsPolicy {
@@ -221,8 +308,12 @@ mod tests {
             policy: kind,
             allowlist,
             explicit,
+            allowed_methods: vec!["GET".into(), "POST".into(), "OPTIONS".into()],
+            allowed_headers: vec!["content-type".into()],
+            exposed_headers: vec!["x-corx-status".into()],
             max_age: std::time::Duration::from_mins(10),
             allow_credentials: false,
+            allow_private_network: false,
         })
     }
 
@@ -246,7 +337,7 @@ mod tests {
         let pol = policy(CorsPolicyKind::Wildcard, vec![], vec![]);
         let req = request(Method::GET, Some("https://app.test"), None);
         let mut resp = http::Response::new(());
-        apply_response_headers(&mut resp, &req, &pol);
+        apply_to_response(&mut resp, req.headers(), &pol);
         assert_eq!(
             resp.headers().get("access-control-allow-origin").unwrap(),
             "*"
@@ -258,7 +349,7 @@ mod tests {
         let pol = policy(CorsPolicyKind::Reflect, vec![], vec![]);
         let req = request(Method::GET, Some("https://app.test"), None);
         let mut resp = http::Response::new(());
-        apply_response_headers(&mut resp, &req, &pol);
+        apply_to_response(&mut resp, req.headers(), &pol);
         assert_eq!(
             resp.headers().get("access-control-allow-origin").unwrap(),
             "https://app.test"
@@ -275,7 +366,7 @@ mod tests {
         );
         let req = request(Method::GET, Some("https://bad.test"), None);
         let mut resp = http::Response::new(());
-        apply_response_headers(&mut resp, &req, &pol);
+        apply_to_response(&mut resp, req.headers(), &pol);
         assert!(resp.headers().get("access-control-allow-origin").is_none());
     }
 
@@ -288,7 +379,7 @@ mod tests {
         );
         let req_ok = request(Method::GET, Some("https://ok.test"), None);
         let mut resp_ok = http::Response::new(());
-        apply_response_headers(&mut resp_ok, &req_ok, &pol);
+        apply_to_response(&mut resp_ok, req_ok.headers(), &pol);
         assert_eq!(
             resp_ok
                 .headers()
@@ -299,7 +390,7 @@ mod tests {
 
         let req_bad = request(Method::GET, Some("https://x.test"), None);
         let mut resp_bad = http::Response::new(());
-        apply_response_headers(&mut resp_bad, &req_bad, &pol);
+        apply_to_response(&mut resp_bad, req_bad.headers(), &pol);
         assert!(
             resp_bad
                 .headers()
@@ -309,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn preflight_mirrors_method_and_max_age() {
+    fn preflight_uses_configured_allowed_methods() {
         let pol = policy(CorsPolicyKind::Wildcard, vec![], vec![]);
         let req = request(Method::OPTIONS, Some("https://a.test"), Some("POST"));
         assert!(is_preflight(&req));
@@ -317,8 +408,114 @@ mod tests {
         assert_eq!(resp.status(), http::StatusCode::NO_CONTENT);
         assert_eq!(
             resp.headers().get("access-control-allow-methods").unwrap(),
-            "POST"
+            "GET, POST, OPTIONS"
+        );
+        assert_eq!(
+            resp.headers().get("access-control-allow-headers").unwrap(),
+            "content-type"
         );
         assert_eq!(resp.headers().get("access-control-max-age").unwrap(), "600");
+        let vary = resp
+            .headers()
+            .get("vary")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(vary.contains("origin"), "vary must contain origin: {vary}");
+        assert!(
+            vary.contains("access-control-request-method"),
+            "vary must contain ACR-Method: {vary}"
+        );
+    }
+
+    #[test]
+    fn exposed_headers_are_emitted_on_real_response() {
+        let pol = policy(CorsPolicyKind::Reflect, vec![], vec![]);
+        let req = request(Method::GET, Some("https://app.test"), None);
+        let mut resp = http::Response::new(());
+        apply_to_response(&mut resp, req.headers(), &pol);
+        assert_eq!(
+            resp.headers().get("access-control-expose-headers").unwrap(),
+            "x-corx-status"
+        );
+    }
+
+    #[test]
+    fn pna_handshake_replies_when_enabled() {
+        let mut cfg = CorsConfig {
+            policy: CorsPolicyKind::Wildcard,
+            allowlist: vec![],
+            explicit: vec![],
+            allowed_methods: vec!["GET".into()],
+            allowed_headers: vec!["content-type".into()],
+            exposed_headers: vec![],
+            max_age: std::time::Duration::from_secs(60),
+            allow_credentials: false,
+            allow_private_network: true,
+        };
+        let pol = CorsPolicy::from_config(&cfg);
+        let req = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/")
+            .header("origin", "https://app.test")
+            .header("access-control-request-method", "GET")
+            .header("access-control-request-private-network", "true")
+            .body(())
+            .unwrap();
+        let resp = build_preflight_response(&req, &pol);
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-private-network")
+                .unwrap(),
+            "true"
+        );
+
+        // PNA defaults to off.
+        cfg.allow_private_network = false;
+        let pol_off = CorsPolicy::from_config(&cfg);
+        let resp_off = build_preflight_response(&req, &pol_off);
+        assert!(
+            resp_off
+                .headers()
+                .get("access-control-allow-private-network")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn wildcard_with_credentials_falls_back_to_origin_echo() {
+        let mut cfg = CorsConfig {
+            policy: CorsPolicyKind::Wildcard,
+            allowlist: vec![],
+            explicit: vec![],
+            allowed_methods: vec![],
+            allowed_headers: vec![],
+            exposed_headers: vec![],
+            max_age: std::time::Duration::from_secs(60),
+            allow_credentials: true,
+            allow_private_network: false,
+        };
+        let pol = CorsPolicy::from_config(&cfg);
+        let req = request(Method::GET, Some("https://app.test"), None);
+        let mut resp = http::Response::new(());
+        apply_to_response(&mut resp, req.headers(), &pol);
+        assert_eq!(
+            resp.headers().get("access-control-allow-origin").unwrap(),
+            "https://app.test"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-credentials")
+                .unwrap(),
+            "true"
+        );
+        // sanity: the wildcard branch still hits when credentials are off
+        cfg.allow_credentials = false;
+        let pol_no_creds = CorsPolicy::from_config(&cfg);
+        let mut resp2 = http::Response::new(());
+        apply_to_response(&mut resp2, req.headers(), &pol_no_creds);
+        assert_eq!(
+            resp2.headers().get("access-control-allow-origin").unwrap(),
+            "*"
+        );
     }
 }

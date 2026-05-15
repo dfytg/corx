@@ -1,10 +1,9 @@
 //! `tracing` subscriber bootstrap.
 
+use corx_core::config::{LogFormat, ObservabilityConfig};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
-
-use corx_core::config::{LogFormat, ObservabilityConfig};
 
 /// Installs the global `tracing` subscriber.
 ///

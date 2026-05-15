@@ -72,7 +72,7 @@ serde_json = { workspace = true }
 figment = { workspace = true }
 humantime-serde = { workspace = true }
 
-uuid = { workspace = true, features = ["v7"] }
+uuid = { workspace = true }
 
 thiserror = { workspace = true }
 anyhow = { workspace = true }

@@ -4,12 +4,14 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
+use axum::middleware;
 use axum::routing::{any, get};
 use http::StatusCode;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::handlers;
+use crate::middleware::cors_layer;
 use crate::state::ServerBuild;
 
 /// Shared application state injected into every handler.
@@ -49,6 +51,9 @@ pub fn build_router(state: AppState) -> Router<()> {
     router
         .fallback(any(handlers::proxy))
         .method_not_allowed_fallback(handlers::not_found)
+        // The CORS layer must run *with* the application state because the
+        // policy is owned by `ServerBuild`. Apply it before stripping state.
+        .layer(middleware::from_fn_with_state(state.clone(), cors_layer))
         .with_state(state)
         .layer(DefaultBodyLimit::max(body_limit))
         .layer(TimeoutLayer::with_status_code(

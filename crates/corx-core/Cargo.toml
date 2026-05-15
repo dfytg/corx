@@ -53,5 +53,16 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "url_parser"
+harness = false
+
+[[bench]]
+name = "ssrf_guard"
+harness = false
+
 [lints]
 workspace = true

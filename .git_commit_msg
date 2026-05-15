@@ -1,32 +1,33 @@
-chore(deploy): land M6 release & deploy infrastructure (Dockerfile + Helm + compose + signed images)
+docs(release): land M7 quality bar (integration tests + benches + docs + CHANGELOG)
 
-* Multi-arch container image: rewrite the legacy single-stage Dockerfile
-  into a four-stage cargo-chef pipeline (chef -> planner -> builder ->
-  runtime). The builder accepts a `FEATURES` build arg so the same
-  Dockerfile produces both the lean HTTP-only image and a TLS+OTel
-  build, picks up the new workspace layout, ships under
-  `gcr.io/distroless/cc-debian12:nonroot`, exposes /etc/corx/config.toml
-  with sensible env defaults, and ENTRYPOINTs into `corx serve`.
-* `.dockerignore` removes target/, charts/, docs/ and the .git tree from
-  the build context so cargo-chef's recipe stays stable across feature
-  branches.
-* `docker-compose.yml` plus `deploy/{prometheus.yml, otel-collector.yaml,
-  grafana-datasources.yml}` give a one-shot local stack: corx + OTLP
-  collector + Prometheus + Grafana wired together with a healthcheck
-  that re-uses the new `corx check` subcommand.
-* New Helm chart at `charts/corx`: ConfigMap-mounted TOML, Deployment
-  with checksum-based config rollout, Service, Ingress, HPA, PDB,
-  ServiceAccount, ServiceMonitor and a NOTES.txt that documents the
-  SIGHUP-driven hot-reload contract. Probes target `/livez` and
-  `/readyz` to align with the M3 readiness model.
-* New GitHub workflows:
-  - `docker.yml` builds linux/amd64 + linux/arm64 images, pushes to
-    GHCR, signs each tag with cosign, generates a CycloneDX SBOM via
-    anchore/sbom-action, and attests provenance for tagged releases via
-    `actions/attest-build-provenance`.
-  - `helm.yml` lints, renders and `kubeconform`-validates the chart on
-    every PR, then publishes a packaged chart to GHCR's OCI registry on
-    tag pushes.
-* `deny.toml` codifies the cargo-deny policy used by the upstream
-  `qntx/workflows/ci-rust.yml` runner -- explicit licence allow-list,
-  yanked-deny, registry pinning to crates.io.
+* Integration tests: new `crates/corx-server/tests/integration_proxy.rs`
+  drives a fully assembled `axum` router against a `wiremock` upstream
+  via `tower::ServiceExt::oneshot`. Coverage spans liveness/readiness,
+  CORS preflight short-circuit, end-to-end body forwarding, hostname
+  SSRF blocking, origin denial and forwarded-header injection. The
+  `MetricsHandle` now exposes `for_test()` so multiple test cases can
+  spin up fresh `ServerBuild`s without conflicting on the
+  process-wide `metrics` recorder.
+* Criterion benchmarks: `crates/corx-core/benches/url_parser.rs` and
+  `crates/corx-core/benches/ssrf_guard.rs` cover the two hot-path
+  primitives (URL extraction, IP literal SSRF check) so a regression
+  shows up as a clear percentage delta.
+* Documentation set under `docs/`:
+  - `getting-started.md` -- install + first request walkthrough.
+  - `configuration.md` -- TOML schema + hot-swappable vs immutable.
+  - `security.md` -- defence-in-depth diagram + SSRF / CORS / mTLS.
+  - `observability.md` -- log fields, full Prometheus catalogue, OTLP.
+  - `operations.md` -- probes, signals, hot reload, capacity knobs.
+  - `deployment.md` -- Docker / compose / Helm / TLS / FIPS / CI.
+  - `architecture.md` -- workspace layout + request lifecycle diagram.
+  - `migration.md` -- breaking-change guide for 0.1 -> 0.2.
+  - `testing.md` -- unit + integration + criterion + lint commands.
+  - `README.md` -- index across all of the above.
+* `CHANGELOG.md` documents every M1-M7 deliverable and the breaking
+  changes that come with the workspace split.
+* Top-level `README.md` reshaped: highlights now reflect the
+  enterprise feature set, CLI subcommands documented, doc table links
+  out to the new operator guides.
+
+80 tests passing across the workspace under `--all-features`
+(56 corx-core unit + 17 corx-server unit + 7 integration).

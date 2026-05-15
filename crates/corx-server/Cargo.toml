@@ -82,6 +82,9 @@ anyhow = { workspace = true }
 [dev-dependencies]
 wiremock = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+http-body-util = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

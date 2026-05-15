@@ -14,27 +14,41 @@ use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
 /// Handle used to render the Prometheus text exposition on demand.
+///
+/// Wraps an `Option<PrometheusHandle>` so integration tests can opt out of
+/// registering the global recorder (which can only be installed once per
+/// process). In production code paths the `Option` is always `Some`.
 #[derive(Clone)]
 pub struct MetricsHandle {
-    inner: PrometheusHandle,
+    inner: Option<PrometheusHandle>,
 }
 
 impl std::fmt::Debug for MetricsHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MetricsHandle").finish_non_exhaustive()
+        f.debug_struct("MetricsHandle").finish()
     }
 }
 
 impl MetricsHandle {
     /// Renders the current metric values as a Prometheus text exposition.
+    /// Returns the empty string when running under the test-only stub.
     #[must_use]
     pub fn render(&self) -> String {
-        self.inner.render()
+        self.inner.as_ref().map(PrometheusHandle::render).unwrap_or_default()
+    }
+
+    /// Test-only constructor that skips global recorder registration so
+    /// multiple integration-test cases can each spin up a fresh
+    /// [`crate::ServerBuild`] without conflicting on the
+    /// process-wide `metrics` recorder slot.
+    #[must_use]
+    pub fn for_test() -> Self {
+        Self { inner: None }
     }
 }
 
 /// Latency histogram bucket layout shared by every duration metric. Spans
-/// 1 ms \u2192 10 s on a near-logarithmic scale, matching the SLO ranges most
+/// 1 ms → 10 s on a near-logarithmic scale, matching the SLO ranges most
 /// API gateways care about.
 const LATENCY_BUCKETS: &[f64] = &[
     0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
@@ -147,7 +161,9 @@ pub fn init_metrics() -> anyhow::Result<MetricsHandle> {
     )
     .set(1.0);
 
-    Ok(MetricsHandle { inner: handle })
+    Ok(MetricsHandle {
+        inner: Some(handle),
+    })
 }
 
 fn active_features() -> &'static str {

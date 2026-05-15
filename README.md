@@ -15,21 +15,24 @@ connections, pure-Rust TLS and DNS, and built-in SSRF protection.
   curated list of reserved/private CIDRs before the TCP connection is
   attempted, inside a custom hyper resolver (not in user space).
 - **Flexible CORS policy** — `wildcard`, `reflect` (optionally gated by an
-  allow-list) or `explicit` (exact-match allow-list). Preflights are handled
-  without hitting the upstream.
-- **Manual redirect following** — cross-host redirects strip sensitive
-  headers and drop bodies that cannot be safely replayed.
-- **First-class observability** — structured `tracing` logs (JSON or
-  pretty), Prometheus metrics served under `/metrics`.
-- **Per-origin rate limiting** — GCRA token bucket powered by `governor`,
-  optional regex allow-list for unlimited origins.
-- **Operational endpoints** — `/healthz` liveness probe and
-  `/iscorsneeded` compatibility shim for cors-anywhere clients.
+  allow-list), or `explicit` (exact-match allow-list). Preflights short-
+  circuit without hitting the upstream and CORS is stamped on errors too.
+- **Multi-dimensional rate limiting** — independent GCRA buckets per
+  Origin, IP, target host, and process-wide; the first failing dimension
+  is attributed via `corx_rate_limited_total{dimension}`.
+- **Hardened transport** — optional inbound TLS, mTLS, and FIPS-validated
+  crypto via the `tls` / `mtls` / `fips` Cargo features.
+- **Production observability** — structured `tracing` access logs,
+  Prometheus metrics, and OpenTelemetry / OTLP traces (feature `otel`).
+- **Hot reload** — `SIGHUP` atomically swaps every hot-swappable policy
+  via `arc-swap`; immutable fields are rejected with a clear log message.
+- **Operational endpoints** — `/livez`, `/readyz` (drains to `503` on
+  shutdown), `/healthz` alias, and `/iscorsneeded` compatibility shim.
 
 ## Quick start
 
 ```sh
-cargo run --release --bin corx -- --config corx.example.toml
+cargo run --release --bin corx -- serve --config corx.example.toml
 ```
 
 Proxy a request:
@@ -46,16 +49,47 @@ docker build -t corx:dev .
 docker run --rm -p 8080:8080 corx:dev
 ```
 
+Or boot the full local stack (corx + Prometheus + Grafana + OTLP):
+
+```sh
+docker compose up -d
+```
+
+## CLI
+
+```sh
+corx serve   # default; run the listener
+corx check   # validate config, exit non-zero on failure
+corx dump    # print the resolved config (--format toml|json)
+corx version # print version + os/arch + active features
+```
+
 ## Configuration
 
-See `corx.example.toml` for every available setting. Configuration sources,
-in increasing precedence, are:
+See [`corx.example.toml`](corx.example.toml) for every available setting
+and [`docs/configuration.md`](docs/configuration.md) for the reload model.
+Configuration sources, in increasing precedence, are:
 
 1. Built-in defaults.
 2. `$CORX_CONFIG`, or `./corx.toml`, or `/etc/corx/config.toml`.
 3. Environment variables prefixed with `CORX_` (double underscore separates
    nested keys, e.g. `CORX_SERVER__BIND=0.0.0.0:9000`).
 4. CLI flags (`--config`).
+
+## Documentation
+
+| Doc                                                | Audience            |
+| -------------------------------------------------- | ------------------- |
+| [Getting started](docs/getting-started.md)         | New users           |
+| [Configuration](docs/configuration.md)             | Operators           |
+| [Security model](docs/security.md)                 | Operators / sec-eng |
+| [Observability](docs/observability.md)             | SRE / platform      |
+| [Operations](docs/operations.md)                   | SRE / on-call       |
+| [Deployment](docs/deployment.md)                   | Platform            |
+| [Architecture](docs/architecture.md)               | Contributors        |
+| [Migration 0.1 -> 0.2](docs/migration.md)          | Upgrade owners      |
+| [Testing & benchmarks](docs/testing.md)            | Contributors        |
+| [Changelog](CHANGELOG.md)                          | Everyone            |
 
 ## License
 

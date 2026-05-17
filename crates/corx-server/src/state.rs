@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use arc_swap::{ArcSwap, Guard};
 use corx_core::config::{Config, LimitsConfig, ServerConfig};
-use corx_core::proxy::{CorsPolicy, RequestFilter, ResponseFilter, SsrfGuard, Upstream};
+use corx_core::proxy::{CorsPolicy, HeaderFilter, SsrfGuard, Upstream};
 
 use crate::middleware::{OriginPolicy, RateLimiter, RequestGuard};
 use crate::observability::MetricsHandle;
@@ -38,9 +38,9 @@ pub struct LivePolicies {
     /// Compiled CORS policy.
     pub cors: Arc<CorsPolicy>,
     /// Inbound request filter.
-    pub request_filter: Arc<RequestFilter>,
+    pub request_filter: Arc<HeaderFilter>,
     /// Outbound response filter.
-    pub response_filter: Arc<ResponseFilter>,
+    pub response_filter: Arc<HeaderFilter>,
     /// Inbound guards (origin allow/deny, multi-dimensional rate limiter,
     /// required-header check).
     pub guard: RequestGuard,
@@ -60,13 +60,13 @@ impl LivePolicies {
     /// regex, malformed CIDR, missing TLS material, etc.).
     pub fn build(config: Config) -> anyhow::Result<Self> {
         let cors = CorsPolicy::from_config(&config.cors);
-        let request_filter = RequestFilter::new(&config.security.remove_request_headers);
-        let response_filter = ResponseFilter::new(&config.security.remove_response_headers);
+        let request_filter = HeaderFilter::new(&config.security.remove_request_headers);
+        let response_filter = HeaderFilter::new(&config.security.remove_response_headers);
 
         let resolver = corx_core::proxy::build_resolver();
         let ssrf = SsrfGuard::new(&config.ssrf, resolver);
 
-        let upstream_config = corx_core::proxy::UpstreamConfig {
+        let client_config = corx_core::proxy::ClientConfig {
             pool_max_idle_per_host: config.upstream.pool_max_idle_per_host,
             pool_idle_timeout: config.upstream.pool_idle_timeout,
             connect_timeout: config.limits.connect_timeout,
@@ -74,7 +74,7 @@ impl LivePolicies {
             allow_https_to_http_downgrade: config.limits.allow_https_to_http_downgrade,
             user_agent: config.upstream.user_agent.clone(),
         };
-        let upstream = Upstream::new(upstream_config, ssrf);
+        let upstream = Upstream::new(client_config, ssrf);
 
         let origin_policy = OriginPolicy::from_config(&config.security);
         let rate_limiter = RateLimiter::from_config(&config.rate_limit)?;

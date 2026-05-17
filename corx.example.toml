@@ -59,7 +59,6 @@ mode = { kind = "strict" }
 allow_ipv6 = true
 extra_blocked_cidrs   = []                                # add to the built-in block list
 extra_allowed_cidrs   = []                                # punch holes for trusted internal CIDRs
-deny_redirect_to_private = true                           # also enforced on cross-host redirects
 
 [rate_limit]
 enabled = false                                  # master switch

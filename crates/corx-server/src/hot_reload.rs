@@ -195,7 +195,7 @@ mod tests {
     fn make_handle() -> (ReloadHandle, Config) {
         ensure_crypto_provider();
 
-        let config = Config::defaults();
+        let config = Config::default();
         let immutable_server = Arc::new(config.server.clone());
         let immutable_metrics_endpoint = config.observability.metrics_endpoint.clone();
         let immutable_max_body_bytes = config.limits.max_request_body_bytes;

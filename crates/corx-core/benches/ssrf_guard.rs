@@ -27,7 +27,6 @@ fn make_guard(mode: SsrfMode) -> SsrfGuard {
         allow_ipv6: true,
         extra_blocked_cidrs: Vec::new(),
         extra_allowed_cidrs: Vec::new(),
-        deny_redirect_to_private: true,
     };
     SsrfGuard::new(&cfg, build_resolver())
 }

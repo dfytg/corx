@@ -9,6 +9,12 @@
 //! 3. **Outbound**: cookie-setting headers and configured deny-list entries
 //!    are stripped from the upstream response before handing it to the
 //!    client.
+//!
+//! Both the inbound and outbound passes share the exact same algorithm
+//! (strip `Connection`-listed names, strip hop-by-hop, strip operator
+//! deny-list), so a single [`HeaderFilter`] type backs both. Callers hold
+//! two distinct instances configured with the request-side and response-side
+//! deny lists respectively.
 
 use http::HeaderMap;
 use http::header::HeaderName;
@@ -24,54 +30,32 @@ const HOP_BY_HOP: &[&str] = &[
     "trailer",
     "transfer-encoding",
     "upgrade",
-    // TE/Connection options commonly scrubbed by reverse proxies.
     "proxy-connection",
 ];
 
-/// Compiled filter used during the inbound header rewrite phase.
+/// Compiled header filter shared by the inbound and outbound passes.
 #[derive(Debug, Clone)]
-pub struct RequestFilter {
+pub struct HeaderFilter {
     extra_deny: Vec<HeaderName>,
 }
 
-impl RequestFilter {
-    /// Compile a filter from the configured header names.
+impl HeaderFilter {
+    /// Compile a filter from the configured header names. Names that fail to
+    /// parse are silently dropped so a typo in the config cannot wedge the
+    /// proxy at startup.
     #[must_use]
     pub fn new(extra_deny: &[String]) -> Self {
         Self {
-            extra_deny: compile_names(extra_deny),
+            extra_deny: extra_deny
+                .iter()
+                .filter_map(|raw| raw.parse::<HeaderName>().ok())
+                .collect(),
         }
     }
 
-    /// Strip hop-by-hop and denied headers, then remove any `Connection`-listed
-    /// options as required by RFC 7230.
-    pub fn apply(&self, headers: &mut HeaderMap) {
-        strip_connection_listed(headers);
-        for name in HOP_BY_HOP {
-            headers.remove(*name);
-        }
-        for name in &self.extra_deny {
-            headers.remove(name);
-        }
-    }
-}
-
-/// Compiled filter used during the outbound response rewrite phase.
-#[derive(Debug, Clone)]
-pub struct ResponseFilter {
-    extra_deny: Vec<HeaderName>,
-}
-
-impl ResponseFilter {
-    /// Compile a filter from the configured header names.
-    #[must_use]
-    pub fn new(extra_deny: &[String]) -> Self {
-        Self {
-            extra_deny: compile_names(extra_deny),
-        }
-    }
-
-    /// Strip hop-by-hop and denied headers from an upstream response.
+    /// Strip every header that must not survive a proxy hop: the
+    /// `Connection`-listed names (per RFC 7230 §6.1), the static hop-by-hop
+    /// list, and finally the operator-supplied deny list.
     pub fn apply(&self, headers: &mut HeaderMap) {
         strip_connection_listed(headers);
         for name in HOP_BY_HOP {
@@ -84,40 +68,32 @@ impl ResponseFilter {
 }
 
 fn strip_connection_listed(headers: &mut HeaderMap) {
-    let mut to_remove: Vec<HeaderName> = Vec::new();
-    if let Some(connection) = headers.get(http::header::CONNECTION)
-        && let Ok(value) = connection.to_str()
-    {
-        for token in value.split(',').map(str::trim) {
-            if token.is_empty() {
-                continue;
-            }
-            if let Ok(name) = token.parse::<HeaderName>() {
-                to_remove.push(name);
-            }
-        }
-    }
+    let Some(connection) = headers.get(http::header::CONNECTION) else {
+        return;
+    };
+    let Ok(value) = connection.to_str() else {
+        return;
+    };
+    let to_remove: Vec<HeaderName> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .filter_map(|token| token.parse::<HeaderName>().ok())
+        .collect();
     for name in to_remove {
         headers.remove(name);
     }
-}
-
-fn compile_names(values: &[String]) -> Vec<HeaderName> {
-    values
-        .iter()
-        .filter_map(|raw| raw.parse::<HeaderName>().ok())
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use http::HeaderMap;
 
-    use super::{RequestFilter, ResponseFilter};
+    use super::HeaderFilter;
 
     #[test]
     fn hop_by_hop_headers_are_stripped() {
-        let filter = RequestFilter::new(&[]);
+        let filter = HeaderFilter::new(&[]);
         let mut headers = HeaderMap::new();
         headers.insert("connection", "close".parse().unwrap());
         headers.insert("keep-alive", "timeout=5".parse().unwrap());
@@ -132,7 +108,7 @@ mod tests {
 
     #[test]
     fn connection_listed_headers_are_stripped() {
-        let filter = ResponseFilter::new(&[]);
+        let filter = HeaderFilter::new(&[]);
         let mut headers = HeaderMap::new();
         headers.insert("connection", "close, x-custom".parse().unwrap());
         headers.insert("x-custom", "should-be-removed".parse().unwrap());
@@ -146,7 +122,7 @@ mod tests {
 
     #[test]
     fn extra_deny_list_is_honoured() {
-        let filter = RequestFilter::new(&["cookie".into(), "authorization".into()]);
+        let filter = HeaderFilter::new(&["cookie".into(), "authorization".into()]);
         let mut headers = HeaderMap::new();
         headers.insert("cookie", "a=b".parse().unwrap());
         headers.insert("authorization", "Bearer token".parse().unwrap());

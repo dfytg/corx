@@ -1,97 +1,24 @@
-//! HTTP handlers: the proxy endpoint and the operational endpoints.
+//! Primary proxy handler: drives the full inbound → upstream → outbound
+//! lifecycle for every non-operational request.
 
 use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
-use axum::Json;
 use axum::body::Body as AxumBody;
 use axum::extract::{ConnectInfo, State};
-use axum::response::{IntoResponse as _, Response};
-use corx_core::error::ProxyError;
-use corx_core::proxy::{self, InboundContext, TargetUrl, UpstreamBody, is_preflight};
-use http::header::HeaderName;
-use http::{HeaderMap, HeaderValue, Request, StatusCode, header};
+use axum::response::Response;
+use corx_core::proxy::{self, InboundContext, TargetUrl, is_preflight};
+use http::{HeaderMap, HeaderValue, Request, header};
 use http_body_util::BodyExt as _;
 
+use super::outbound::{
+    EXPOSE_URL_HEADER, append_via_header, axum_to_upstream_body, inject_default_user_agent,
+    set_host_from_target,
+};
 use crate::error::ServerError;
 use crate::observability::CountingBody;
 use crate::observability::metrics as stats;
 use crate::router::AppState;
-
-const EXPOSE_URL_HEADER: HeaderName = HeaderName::from_static("x-corx-target-url");
-const VIA_HEADER_VALUE: &str = "1.1 corx";
-
-const USAGE_TEXT: &str = "corx \u{2014} a CORS forwarding proxy\n\n\
-Usage:\n    \
-GET /https://target.example.com/path\n    \
-GET /target.example.com/path\n    \
-GET /?url=<percent-encoded-url>\n\n\
-Operational endpoints:\n    \
-GET /healthz           liveness probe\n    \
-GET /iscorsneeded      cors-anywhere compatibility shim\n    \
-GET /metrics           Prometheus exposition\n";
-
-/// Landing page describing how to use the proxy.
-pub(crate) async fn usage() -> Response {
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        USAGE_TEXT,
-    )
-        .into_response()
-}
-
-/// `GET /livez` — process liveness. Returns `200 OK` until the process
-/// panics; load balancers should *not* drain on this signal.
-pub(crate) async fn livez() -> Response {
-    (StatusCode::OK, "live").into_response()
-}
-
-/// `GET /readyz` — readiness for traffic. Returns `503 Service Unavailable`
-/// while the server is draining so load balancers stop sending new
-/// requests.
-pub(crate) async fn readyz(State(state): State<AppState>) -> Response {
-    if state.build.ready.load(std::sync::atomic::Ordering::Acquire) {
-        let body = serde_json::json!({"status": "ready"});
-        (StatusCode::OK, Json(body)).into_response()
-    } else {
-        let body = serde_json::json!({
-            "status": "draining",
-            "reason": "shutdown signal received",
-        });
-        (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
-    }
-}
-
-/// `GET /healthz` — backwards-compatible alias kept for Kubernetes default
-/// probes. Mirrors `/readyz` so behaviour stays consistent.
-pub(crate) async fn healthz(state: State<AppState>) -> Response {
-    readyz(state).await
-}
-
-/// `GET /iscorsneeded` — cors-anywhere compatibility endpoint.
-pub(crate) async fn is_cors_needed() -> Response {
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        "no",
-    )
-        .into_response()
-}
-
-/// `GET /metrics` — Prometheus text exposition.
-pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Response {
-    let body = state.build.metrics.render();
-    (
-        StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            "text/plain; version=0.0.4; charset=utf-8",
-        )],
-        body,
-    )
-        .into_response()
-}
 
 /// Primary proxy handler, bound to any path matching `/*path`.
 pub(crate) async fn proxy(
@@ -103,18 +30,17 @@ pub(crate) async fn proxy(
     metrics::counter!(stats::REQUESTS_TOTAL).increment(1);
     metrics::gauge!(stats::INFLIGHT_REQUESTS).increment(1.0);
 
-    let decrement_inflight = InflightGuard;
-
+    let _decrement_inflight = InflightGuard;
     let outcome = serve(state, request, peer.ip()).await;
 
+    let elapsed = started.elapsed().as_secs_f64();
     match &outcome {
         Ok(response) => {
-            let status = response.status();
             metrics::histogram!(
                 stats::REQUEST_DURATION,
-                "status" => status.as_u16().to_string()
+                "status" => response.status().as_u16().to_string()
             )
-            .record(started.elapsed().as_secs_f64());
+            .record(elapsed);
         }
         Err(error) => {
             let kind = error.0.kind();
@@ -123,14 +49,14 @@ pub(crate) async fn proxy(
                 stats::REQUEST_DURATION,
                 "status" => kind.status().as_u16().to_string()
             )
-            .record(started.elapsed().as_secs_f64());
+            .record(elapsed);
         }
     }
 
-    drop(decrement_inflight);
     outcome
 }
 
+/// RAII guard that decrements the in-flight gauge on drop, even on panic.
 struct InflightGuard;
 
 impl Drop for InflightGuard {
@@ -217,11 +143,8 @@ async fn execute_proxy(
     inject_default_user_agent(&mut parts.headers, policies.upstream.user_agent());
     set_host_from_target(&mut parts.headers, &target);
 
-    let upstream_uri = target.to_uri()?;
-    parts.uri = upstream_uri;
-
-    let body: UpstreamBody = axum_to_upstream_body(body);
-    let outbound = Request::from_parts(parts, body);
+    parts.uri = target.to_uri()?;
+    let outbound = Request::from_parts(parts, axum_to_upstream_body(body));
 
     let upstream_started = Instant::now();
     let upstream_response = policies.upstream.execute(outbound).await;
@@ -253,70 +176,16 @@ fn shape_response(
     let (mut response_parts, response_body) = response.into_parts();
     policies.response_filter.apply(&mut response_parts.headers);
 
-    // Advertise the final URL and our presence in the via chain.
     if let Ok(value) = HeaderValue::from_str(target.url.as_str()) {
         response_parts.headers.insert(EXPOSE_URL_HEADER, value);
     }
     append_via_header(&mut response_parts.headers);
 
     let mut reassembled = hyper::Response::from_parts(response_parts, response_body);
-
-    // Apply CORS last so its headers win on collisions.
     proxy::apply_to_response(&mut reassembled, request_headers, policies.cors.as_ref());
 
     let (final_parts, final_body) = reassembled.into_parts();
     let counted = CountingBody::new(final_body, "response");
     let axum_body = AxumBody::new(counted.map_err(axum::Error::new));
     Response::from_parts(final_parts, axum_body)
-}
-
-fn inject_default_user_agent(headers: &mut HeaderMap, default_ua: &str) {
-    if headers.contains_key(header::USER_AGENT) {
-        return;
-    }
-    if let Ok(value) = HeaderValue::from_str(default_ua) {
-        headers.insert(header::USER_AGENT, value);
-    }
-}
-
-fn set_host_from_target(headers: &mut HeaderMap, target: &TargetUrl) {
-    let authority = target.url.port().map_or_else(
-        || target.host.clone(),
-        |port| format!("{}:{port}", target.host),
-    );
-    if let Ok(value) = HeaderValue::from_str(&authority) {
-        headers.insert(header::HOST, value);
-    }
-}
-
-fn append_via_header(headers: &mut HeaderMap) {
-    let header_name = header::VIA;
-    let new_value = headers.get(&header_name).map_or_else(
-        || VIA_HEADER_VALUE.to_owned(),
-        |existing| {
-            existing.to_str().map_or_else(
-                |_| VIA_HEADER_VALUE.to_owned(),
-                |s| format!("{s}, {VIA_HEADER_VALUE}"),
-            )
-        },
-    );
-    if let Ok(value) = HeaderValue::from_str(&new_value) {
-        headers.insert(header_name, value);
-    }
-}
-
-fn axum_to_upstream_body(body: AxumBody) -> UpstreamBody {
-    let counted = CountingBody::new(body, "request");
-    counted
-        .map_err(|err| ProxyError::Internal(anyhow::Error::new(err)))
-        .boxed_unsync()
-}
-
-/// Fallback handler used when the router cannot match a path.
-pub(crate) async fn not_found() -> Response {
-    let body = serde_json::json!({
-        "error": "not_found",
-        "message": "resource not found",
-    });
-    (StatusCode::NOT_FOUND, Json(body)).into_response()
 }

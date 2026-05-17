@@ -46,8 +46,8 @@ impossible to bypass by aiming the proxy at an IP literal:
   before evaluation.
 - Operators add carve-outs via `ssrf.extra_allowed_cidrs`; they take
   precedence and are how you intentionally proxy to internal API gateways.
-- `ssrf.deny_redirect_to_private = true` (default) extends the same checks
-  to every hop in a redirect chain.
+- The same checks run on every redirect hop because the SSRF-aware
+  resolver is plugged into the underlying hyper connector.
 
 ## CORS policy
 

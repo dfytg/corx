@@ -87,7 +87,7 @@ fn make_stack(mutator: impl FnOnce(&mut Config)) -> (axum::Router, MockServer) {
     // running under `#[tokio::test]`.
     let mock = futures::executor::block_on(MockServer::start());
 
-    let mut config = Config::defaults();
+    let mut config = Config::default();
     // Allow the loopback the mock binds to; SSRF default rejects 127/8.
     config.ssrf.mode = SsrfMode::Strict;
     config

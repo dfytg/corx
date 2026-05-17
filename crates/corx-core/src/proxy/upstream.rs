@@ -40,9 +40,15 @@ pub type UpstreamBody = http_body_util::combinators::UnsyncBoxBody<Bytes, ProxyE
 type Connector = hyper_rustls::HttpsConnector<HttpConnector<GuardedResolver>>;
 type HyperClient = Client<Connector, UpstreamBody>;
 
-/// Tuning parameters for the upstream client.
+/// Tuning parameters for the upstream HTTP client.
+///
+/// Named [`ClientConfig`] (rather than the more obvious `UpstreamConfig`)
+/// to keep it lexically distinct from [`crate::config::UpstreamConfig`],
+/// which carries the operator-facing fields. The two structures intentionally
+/// hold a slightly different slice of fields: this one mixes in the limits
+/// and redirect policy that the hyper client needs at construction time.
 #[derive(Debug, Clone)]
-pub struct UpstreamConfig {
+pub struct ClientConfig {
     /// Max idle connections retained per host.
     pub pool_max_idle_per_host: usize,
     /// Idle connection timeout.
@@ -62,7 +68,7 @@ pub struct UpstreamConfig {
 pub struct Upstream {
     client: HyperClient,
     guard: Arc<SsrfGuard>,
-    config: Arc<UpstreamConfig>,
+    config: Arc<ClientConfig>,
 }
 
 impl std::fmt::Debug for Upstream {
@@ -81,7 +87,7 @@ impl Upstream {
     /// violates SSRF policy. The platform TLS verifier is loaded lazily by
     /// `rustls-platform-verifier`; construction itself is infallible.
     #[must_use]
-    pub fn new(config: UpstreamConfig, guard: SsrfGuard) -> Self {
+    pub fn new(config: ClientConfig, guard: SsrfGuard) -> Self {
         let guard = Arc::new(guard);
 
         let mut http = HttpConnector::new_with_resolver(GuardedResolver {
@@ -128,7 +134,8 @@ impl Upstream {
         let (mut state, first_request) = split_initial(request);
         let target_host = state
             .uri
-            .host().map_or_else(|| "unknown".to_owned(), str::to_owned);
+            .host()
+            .map_or_else(|| "unknown".to_owned(), str::to_owned);
         let mut hops: u8 = 0;
         let mut next_request = first_request;
 

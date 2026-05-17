@@ -261,7 +261,7 @@ mod tests {
     use crate::config::{CorsPolicyKind, ServerConfig};
 
     fn base() -> Config {
-        Config::defaults()
+        Config::default()
     }
 
     #[test]

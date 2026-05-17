@@ -4,11 +4,10 @@ use std::collections::HashSet;
 
 use corx_core::config::SecurityConfig;
 use corx_core::error::ProxyError;
+use corx_core::util::OriginSet;
 use foldhash::fast::RandomState;
 use http::header::ORIGIN;
 use http::{HeaderMap, Method};
-
-type OriginSet = HashSet<String, RandomState>;
 
 /// Compiled origin policy.
 #[derive(Debug, Clone)]
@@ -88,11 +87,7 @@ impl OriginPolicy {
 }
 
 fn to_origin_set(values: &[String]) -> OriginSet {
-    let mut set = OriginSet::with_capacity_and_hasher(values.len(), RandomState::default());
-    for value in values {
-        set.insert(value.clone());
-    }
-    set
+    values.iter().cloned().collect()
 }
 
 #[cfg(test)]
@@ -185,4 +180,3 @@ mod tests {
         );
     }
 }
-

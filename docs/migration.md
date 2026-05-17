@@ -85,8 +85,8 @@ credentials are on, so this combination is unambiguously documented.
   optionally also private IPs. Useful in heavily firewalled
   environments where the proxy must reach internal services.
 
-`ssrf.deny_redirect_to_private` (default `true`) extends the same checks
-across redirect chains.
+The SSRF guard is consulted on every hop, including redirects, because
+`Upstream::execute` re-runs the resolver on each follow-up.
 
 ### TLS
 

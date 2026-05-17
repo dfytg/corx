@@ -180,10 +180,7 @@ pub fn build_preflight_response<B>(req: &Request<B>, policy: &CorsPolicy) -> Res
 
     // Private Network Access handshake (Chromium et al.).
     if policy.allow_private_network && request_headers.get(&ACR_PRIVATE_NETWORK).is_some() {
-        response_headers.insert(
-            ACA_PRIVATE_NETWORK,
-            HeaderValue::from_static("true"),
-        );
+        response_headers.insert(ACA_PRIVATE_NETWORK, HeaderValue::from_static("true"));
     }
 
     // Preflights vary on the request method and headers in addition to origin.

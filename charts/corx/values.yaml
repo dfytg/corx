@@ -107,7 +107,6 @@ config: |
   mode = "strict"
   extra_blocked_cidrs = []
   extra_allowed_cidrs = []
-  deny_redirect_to_private = true
 
   [forwarded]
   inject = true

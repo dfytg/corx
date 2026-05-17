@@ -127,10 +127,7 @@ impl SsrfGuard {
     #[must_use]
     pub const fn canonicalise(addr: IpAddr) -> IpAddr {
         match addr {
-            IpAddr::V6(v6) => {
-                
-                v6.to_canonical()
-            }
+            IpAddr::V6(v6) => v6.to_canonical(),
             IpAddr::V4(_) => addr,
         }
     }
@@ -281,7 +278,6 @@ mod tests {
             allow_ipv6: true,
             extra_blocked_cidrs: extras_block,
             extra_allowed_cidrs: extras_allow,
-            deny_redirect_to_private: true,
         };
         let resolver = super::build_resolver();
         SsrfGuard::new(&cfg, resolver)

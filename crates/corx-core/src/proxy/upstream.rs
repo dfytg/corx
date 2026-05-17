@@ -204,8 +204,10 @@ fn split_initial(
 
 /// Produces an empty [`UpstreamBody`] suitable for requests synthesised
 /// after a redirect hop where the original body cannot be replayed.
-#[must_use]
-pub fn empty_upstream_body() -> UpstreamBody {
+///
+/// Internal: only [`crate::proxy::redirect`] needs to fabricate a body
+/// out of thin air.
+pub(crate) fn empty_upstream_body() -> UpstreamBody {
     Empty::<Bytes>::new()
         .map_err(|never: std::convert::Infallible| -> ProxyError { match never {} })
         .boxed_unsync()

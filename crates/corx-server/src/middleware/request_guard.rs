@@ -4,7 +4,6 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use corx_core::error::ProxyError;
-use http::Method;
 use http::Request;
 
 use crate::middleware::rate_limit::RateContext;
@@ -61,11 +60,5 @@ impl RequestGuard {
             target_host,
         };
         self.rate_limit.check(&ctx)
-    }
-
-    /// Short-circuits CORS preflights to avoid rate-limiting them away.
-    #[must_use]
-    pub fn should_skip_for_preflight(method: &Method) -> bool {
-        method == Method::OPTIONS
     }
 }

@@ -14,19 +14,18 @@
 //!   payloads constructed in [`crate::error`] so cross-origin failures stay
 //!   readable to the calling browser.
 //!
-//! All three paths route through [`apply_to_response`] / [`apply_to_error_response`]
-//! to keep the policy in one place.
+//! All three paths route through [`apply_to_response`] to keep the policy
+//! in one place.
 
-use std::collections::HashSet;
 use std::time::Duration;
 
 use bytes::Bytes;
-use foldhash::fast::RandomState;
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::Empty;
 
 use crate::config::{CorsConfig, CorsPolicyKind};
+use crate::util::OriginSet;
 
 /// Header used by browsers to opt into Private Network Access preflights
 /// when the page origin is on a more-private network than the target.
@@ -34,8 +33,6 @@ const ACR_PRIVATE_NETWORK: HeaderName =
     HeaderName::from_static("access-control-request-private-network");
 const ACA_PRIVATE_NETWORK: HeaderName =
     HeaderName::from_static("access-control-allow-private-network");
-
-type OriginSet = HashSet<String, RandomState>;
 
 /// Response body type used for short-lived responses constructed inside this module.
 pub type StaticBody = Empty<Bytes>;
@@ -134,11 +131,7 @@ impl CorsPolicy {
 }
 
 fn to_origin_set(values: &[String]) -> OriginSet {
-    let mut set = OriginSet::with_capacity_and_hasher(values.len(), RandomState::default());
-    for value in values {
-        set.insert(value.clone());
-    }
-    set
+    values.iter().cloned().collect()
 }
 
 /// Build a `204 No Content` response to a CORS preflight request.

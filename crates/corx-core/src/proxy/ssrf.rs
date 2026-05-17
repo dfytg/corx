@@ -55,10 +55,9 @@ const DEFAULT_BLOCKED_CIDRS: &[&str] = &[
     "240.0.0.0/4",        // Reserved future use (RFC 1112)
     "255.255.255.255/32", // Limited broadcast
     // --- IPv6 -----------------------------------------------------------
-    "::/128",        // Unspecified (RFC 4291)
-    "::1/128",       // Loopback (RFC 4291)
-    "::ffff:0:0/96", // IPv4-mapped — redundant after canonicalisation but kept
-    // for defence in depth.
+    "::/128",         // Unspecified (RFC 4291)
+    "::1/128",        // Loopback (RFC 4291)
+    "::ffff:0:0/96",  // IPv4-mapped; defence-in-depth after canonicalisation.
     "64:ff9b::/96",   // IPv4/IPv6 translation (RFC 6052)
     "64:ff9b:1::/48", // Local IPv4/IPv6 translation (RFC 8215)
     "100::/64",       // Discard prefix (RFC 6666)

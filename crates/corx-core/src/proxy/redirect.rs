@@ -169,7 +169,11 @@ fn resolve_location(base: &Uri, location: &str) -> Result<Uri, ProxyError> {
             .map_err(|err| ProxyError::InvalidUrl(format!("invalid redirect target: {err}")));
     }
 
-    let base_url = uri_to_url(base)?;
+    // hyper's `Uri` and `url::Url` parse the same grammar differently; the
+    // latter is the canonical implementation of RFC 3986 `join`, so we lift
+    // the base into a `Url`, resolve, and lower back.
+    let base_url = url::Url::parse(&base.to_string())
+        .map_err(|err| ProxyError::InvalidUrl(format!("uri-to-url failed: {err}")))?;
     let resolved = base_url
         .join(location)
         .map_err(|err| ProxyError::InvalidUrl(format!("cannot resolve redirect: {err}")))?;
@@ -177,11 +181,6 @@ fn resolve_location(base: &Uri, location: &str) -> Result<Uri, ProxyError> {
         .as_str()
         .parse()
         .map_err(|err| ProxyError::InvalidUrl(format!("invalid resolved redirect: {err}")))
-}
-
-fn uri_to_url(uri: &Uri) -> Result<url::Url, ProxyError> {
-    url::Url::parse(&uri.to_string())
-        .map_err(|err| ProxyError::InvalidUrl(format!("uri-to-url failed: {err}")))
 }
 
 fn classify_transition(method: &Method, status: StatusCode) -> (Method, bool) {

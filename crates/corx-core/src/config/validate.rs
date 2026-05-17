@@ -186,7 +186,7 @@ fn validate_rate_limit(cfg: &RateLimitConfig, report: &mut ValidationReport) {
 
 fn check_dimension(report: &mut ValidationReport, prefix: &'static str, rps: u32, burst: u32) {
     if rps == 0 {
-        return; // disabled, nothing to check
+        return;
     }
     if burst == 0 {
         report.errors.push(ConfigError::new(

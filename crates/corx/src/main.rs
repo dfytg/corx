@@ -25,7 +25,7 @@ use std::path::Path;
 use clap::Parser as _;
 use corx_core::config::Config;
 use corx_server::config_loader;
-use corx_server::observability::{init_metrics, init_tracing};
+use corx_server::observability::{active_features, init_metrics, init_tracing};
 use corx_server::{AppState, ServerBuild, build_router, run};
 
 use crate::cli::{Cli, Command, DumpFormat};
@@ -118,29 +118,6 @@ fn print_version() {
         arch = std::env::consts::ARCH,
         features = active_features(),
     );
-}
-
-const fn active_features() -> &'static str {
-    if cfg!(all(
-        feature = "tls",
-        feature = "mtls",
-        feature = "fips",
-        feature = "otel"
-    )) {
-        "tls,mtls,fips,otel"
-    } else if cfg!(all(feature = "tls", feature = "mtls", feature = "otel")) {
-        "tls,mtls,otel"
-    } else if cfg!(all(feature = "tls", feature = "mtls")) {
-        "tls,mtls"
-    } else if cfg!(all(feature = "tls", feature = "otel")) {
-        "tls,otel"
-    } else if cfg!(feature = "tls") {
-        "tls"
-    } else if cfg!(feature = "otel") {
-        "otel"
-    } else {
-        "none"
-    }
 }
 
 fn install_crypto_provider() {

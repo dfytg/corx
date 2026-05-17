@@ -8,5 +8,5 @@ pub mod otel;
 mod tracing;
 
 pub use self::metering::CountingBody;
-pub use self::metrics::{MetricsHandle, init_metrics};
+pub use self::metrics::{MetricsHandle, active_features, init_metrics};
 pub use self::tracing::init_tracing;

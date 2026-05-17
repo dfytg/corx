@@ -43,7 +43,7 @@ pub(crate) async fn proxy(
             .record(elapsed);
         }
         Err(error) => {
-            let kind = error.0.kind();
+            let kind = error.kind();
             metrics::counter!(stats::UPSTREAM_ERRORS, "kind" => kind.as_str()).increment(1);
             metrics::histogram!(
                 stats::REQUEST_DURATION,

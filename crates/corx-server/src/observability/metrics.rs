@@ -5,6 +5,8 @@
 //! and additionally owns the recorder installation — which is HTTP-stack
 //! specific and therefore lives outside of `corx-core`.
 
+use std::sync::OnceLock;
+
 pub use corx_core::observability::{
     BUILD_INFO, BYTES_TRANSFERRED, CONFIG_RELOAD, DNS_LOOKUPS, INFLIGHT_REQUESTS, RATE_LIMITED,
     REDIRECT_HOPS, REQUEST_DURATION, REQUESTS_TOTAL, SSRF_BLOCKS, UPSTREAM_DURATION,
@@ -155,12 +157,11 @@ pub fn init_metrics() -> anyhow::Result<MetricsHandle> {
     // Stamp build_info exactly once with the binary's identity. The label
     // set is small and deterministic so this never causes cardinality
     // explosions.
-    let features = active_features();
     metrics::gauge!(
         BUILD_INFO,
         "version" => env!("CARGO_PKG_VERSION"),
         "rust_version" => env!("CARGO_PKG_RUST_VERSION"),
-        "features" => features,
+        "features" => active_features(),
     )
     .set(1.0);
 
@@ -169,26 +170,31 @@ pub fn init_metrics() -> anyhow::Result<MetricsHandle> {
     })
 }
 
-const fn active_features() -> &'static str {
-    // Keep the result static; cardinality stays low.
-    if cfg!(all(
-        feature = "tls",
-        feature = "mtls",
-        feature = "fips",
-        feature = "otel"
-    )) {
-        "tls,mtls,fips,otel"
-    } else if cfg!(all(feature = "tls", feature = "mtls", feature = "otel")) {
-        "tls,mtls,otel"
-    } else if cfg!(all(feature = "tls", feature = "mtls")) {
-        "tls,mtls"
-    } else if cfg!(all(feature = "tls", feature = "otel")) {
-        "tls,otel"
-    } else if cfg!(feature = "tls") {
-        "tls"
-    } else if cfg!(feature = "otel") {
-        "otel"
-    } else {
-        "none"
-    }
+/// Comma-separated list of Cargo features the binary was compiled with, or
+/// `"none"` when every optional feature is off.
+///
+/// Memoised in a `OnceLock` so the `build_info` metric and the `--version`
+/// CLI subcommand share a single allocation.
+#[must_use]
+pub fn active_features() -> &'static str {
+    static FEATURES: OnceLock<String> = OnceLock::new();
+    FEATURES
+        .get_or_init(|| {
+            let candidates: &[(bool, &str)] = &[
+                (cfg!(feature = "tls"), "tls"),
+                (cfg!(feature = "mtls"), "mtls"),
+                (cfg!(feature = "fips"), "fips"),
+                (cfg!(feature = "otel"), "otel"),
+            ];
+            let active: Vec<&str> = candidates
+                .iter()
+                .filter_map(|(on, name)| on.then_some(*name))
+                .collect();
+            if active.is_empty() {
+                "none".to_owned()
+            } else {
+                active.join(",")
+            }
+        })
+        .as_str()
 }

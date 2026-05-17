@@ -39,7 +39,14 @@ pub fn build_router(state: AppState) -> Router<()> {
     let max_body = state.build.immutable_limits.max_request_body_bytes;
     let request_timeout = state.build.immutable_limits.request_timeout;
     let metrics_path = state.build.immutable_metrics_endpoint.clone();
-    let body_limit = usize::try_from(max_body).unwrap_or(usize::MAX);
+    let body_limit = usize::try_from(max_body).unwrap_or_else(|_| {
+        tracing::warn!(
+            configured = max_body,
+            used = usize::MAX,
+            "limits.max_request_body_bytes exceeds usize::MAX on this target; clamping to usize::MAX",
+        );
+        usize::MAX
+    });
 
     let mut router = Router::new()
         .route("/", get(handlers::usage))

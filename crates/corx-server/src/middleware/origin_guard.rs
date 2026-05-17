@@ -56,30 +56,29 @@ impl OriginPolicy {
             )));
         }
 
-        let origin = headers
-            .get(ORIGIN)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-
-        if let Some(origin) = origin.as_deref() {
-            if self.blacklist.contains(origin) {
-                return Err(ProxyError::OriginNotAllowed(origin.to_owned()));
+        let origin = headers.get(ORIGIN).and_then(|value| value.to_str().ok());
+        match origin {
+            Some(origin) => {
+                if self.blacklist.contains(origin) {
+                    return Err(ProxyError::OriginNotAllowed(origin.to_owned()));
+                }
+                if !self.whitelist.is_empty() && !self.whitelist.contains(origin) {
+                    return Err(ProxyError::OriginNotAllowed(origin.to_owned()));
+                }
             }
-            if !self.whitelist.is_empty() && !self.whitelist.contains(origin) {
-                return Err(ProxyError::OriginNotAllowed(origin.to_owned()));
+            None if !self.whitelist.is_empty() => {
+                return Err(ProxyError::OriginNotAllowed("<missing origin>".into()));
             }
-        } else if !self.whitelist.is_empty() {
-            return Err(ProxyError::OriginNotAllowed("<missing origin>".into()));
+            None => {}
         }
 
-        if !self.required_header_any_of.is_empty() {
-            let found = self
+        if !self.required_header_any_of.is_empty()
+            && !self
                 .required_header_any_of
                 .iter()
-                .any(|name| headers.contains_key(name.as_str()));
-            if !found {
-                return Err(ProxyError::MissingHeader("required inbound header"));
-            }
+                .any(|name| headers.contains_key(name.as_str()))
+        {
+            return Err(ProxyError::MissingHeader("required inbound header"));
         }
 
         Ok(())

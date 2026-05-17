@@ -12,7 +12,7 @@
 
 use axum::Json;
 use axum::response::{IntoResponse, Response};
-use corx_core::error::{ProxyError, STATUS_HEADER};
+use corx_core::error::{ErrorKind, ProxyError, STATUS_HEADER};
 use http::HeaderValue;
 
 /// Newtype wrapper that lifts a [`ProxyError`] into an `axum::IntoResponse`.
@@ -27,7 +27,21 @@ use http::HeaderValue;
 /// }
 /// ```
 #[derive(Debug)]
-pub struct ServerError(pub ProxyError);
+pub struct ServerError(ProxyError);
+
+impl ServerError {
+    /// Borrow the wrapped engine error.
+    #[must_use]
+    pub const fn inner(&self) -> &ProxyError {
+        &self.0
+    }
+
+    /// Stable machine-readable identifier for the underlying error.
+    #[must_use]
+    pub const fn kind(&self) -> ErrorKind {
+        self.0.kind()
+    }
+}
 
 impl<E: Into<ProxyError>> From<E> for ServerError {
     fn from(err: E) -> Self {

@@ -83,10 +83,13 @@ GitHub Actions workflows ship under `.github/workflows`:
 
 - `ci.yml` invokes the shared `qntx/workflows/ci-rust.yml` runner for
   fmt / clippy / unit + integration tests / cargo-deny.
-- `docker.yml` builds + signs (cosign) + SBOMs (CycloneDX) every image,
-  attesting build provenance for tagged releases.
-- `helm.yml` lints, renders and `kubeconform`-validates the chart on
-  every PR; tags publish the chart to the GHCR OCI registry.
+- `docker.yml` builds multi-arch images **only on `v*` tags** (and manual
+  `workflow_dispatch`): push to GHCR, cosign sign, CycloneDX SBOM, and
+  provenance attestation. PRs and ordinary `main` pushes skip Docker to
+  avoid long QEMU/buildx jobs; use `docker build` locally if you need an
+  image smoke test before release.
+- `helm.yml` lints, renders and `kubeconform`-validates the chart when
+  chart paths change; tags publish the chart to the GHCR OCI registry.
 
 ## Release engineering checklist
 

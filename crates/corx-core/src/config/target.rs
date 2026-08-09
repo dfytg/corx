@@ -17,7 +17,7 @@ pub enum TargetMode {
 
 /// Target URL admission (host + scheme) applied after path extraction and
 /// before rate limiting / upstream connect.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TargetConfig {
     /// Host admission mode.

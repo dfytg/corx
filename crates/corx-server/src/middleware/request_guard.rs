@@ -27,6 +27,13 @@ impl RequestGuard {
         }
     }
 
+    /// Clone of the compiled multi-dimensional rate limiter (for hot-reload
+    /// state retention when `rate_limit` config is unchanged).
+    #[must_use]
+    pub fn rate_limiter(&self) -> RateLimiter {
+        self.rate_limit.clone()
+    }
+
     /// Origin policy / required headers / blocked methods. Cheap, runs
     /// before URL extraction so that obviously-bad requests never reach the
     /// parser.

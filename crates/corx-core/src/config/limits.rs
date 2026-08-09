@@ -11,7 +11,7 @@ const MIB: u64 = 1024 * 1024;
 #[serde(rename_all = "lowercase")]
 pub enum RedirectPolicy {
     /// Follow redirects in-proxy (up to [`LimitsConfig::max_redirects`]),
-    /// re-validating SSRF on every hop. **Default.**
+    /// re-validating SSRF and target policy on every hop. **Default.**
     #[default]
     Follow,
     /// Do not follow; surface a proxy error instead of leaking Location.
@@ -22,13 +22,21 @@ pub enum RedirectPolicy {
 }
 
 /// Size- and time-based limits applied to every request.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LimitsConfig {
     /// Maximum inbound request body size, in bytes.
     pub max_request_body_bytes: u64,
     /// Maximum inbound header size, in bytes.
     pub max_request_header_bytes: u32,
+    /// Maximum upstream response body size, in bytes. `0` disables the cap.
+    /// When exceeded the stream is aborted mid-transfer.
+    #[serde(default = "default_max_response_body_bytes")]
+    pub max_response_body_bytes: u64,
+    /// Maximum concurrent in-flight requests process-wide. `0` disables
+    /// load-shed. Independent of GCRA rate limiting.
+    #[serde(default = "default_inflight_max")]
+    pub inflight_max: u32,
     /// Total allowable duration of a single proxied request, end-to-end.
     #[serde(with = "humantime_serde")]
     pub request_timeout: Duration,
@@ -45,11 +53,21 @@ pub struct LimitsConfig {
     pub redirect_policy: RedirectPolicy,
 }
 
+const fn default_max_response_body_bytes() -> u64 {
+    50 * MIB
+}
+
+const fn default_inflight_max() -> u32 {
+    1_000
+}
+
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             max_request_body_bytes: 10 * MIB,
             max_request_header_bytes: 32 * 1024,
+            max_response_body_bytes: default_max_response_body_bytes(),
+            inflight_max: default_inflight_max(),
             request_timeout: Duration::from_mins(1),
             connect_timeout: Duration::from_secs(10),
             max_redirects: 5,

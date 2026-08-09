@@ -7,7 +7,7 @@ use std::time::Instant;
 use axum::body::Body as AxumBody;
 use axum::extract::{ConnectInfo, State};
 use axum::response::Response;
-use corx_core::config::PreflightMode;
+use corx_core::config::{PreflightMode, RedirectPolicy};
 use corx_core::proxy::{self, InboundContext, TargetUrl, is_preflight};
 use http::{HeaderMap, HeaderValue, Request, header};
 use http_body_util::BodyExt as _;
@@ -17,8 +17,7 @@ use super::outbound::{
     set_host_from_target,
 };
 use crate::error::ServerError;
-use crate::observability::CountingBody;
-use crate::observability::metrics as stats;
+use crate::observability::{CountingBody, LimitingBody};
 use crate::router::AppState;
 
 /// Primary proxy handler, bound to any path matching `/*path`.
@@ -28,8 +27,8 @@ pub(crate) async fn proxy(
     request: Request<AxumBody>,
 ) -> Result<Response, ServerError> {
     let started = Instant::now();
-    metrics::counter!(stats::REQUESTS_TOTAL).increment(1);
-    metrics::gauge!(stats::INFLIGHT_REQUESTS).increment(1.0);
+    metrics::counter!(crate::observability::metrics::REQUESTS_TOTAL).increment(1);
+    metrics::gauge!(crate::observability::metrics::INFLIGHT_REQUESTS).increment(1.0);
 
     let _decrement_inflight = InflightGuard;
     let outcome = serve(state, request, peer.ip()).await;
@@ -38,16 +37,20 @@ pub(crate) async fn proxy(
     match &outcome {
         Ok(response) => {
             metrics::histogram!(
-                stats::REQUEST_DURATION,
+                crate::observability::metrics::REQUEST_DURATION,
                 "status" => response.status().as_u16().to_string()
             )
             .record(elapsed);
         }
         Err(error) => {
             let kind = error.kind();
-            metrics::counter!(stats::UPSTREAM_ERRORS, "kind" => kind.as_str()).increment(1);
+            metrics::counter!(
+                crate::observability::metrics::UPSTREAM_ERRORS,
+                "kind" => kind.as_str()
+            )
+            .increment(1);
             metrics::histogram!(
-                stats::REQUEST_DURATION,
+                crate::observability::metrics::REQUEST_DURATION,
                 "status" => kind.status().as_u16().to_string()
             )
             .record(elapsed);
@@ -62,7 +65,7 @@ struct InflightGuard;
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        metrics::gauge!(stats::INFLIGHT_REQUESTS).decrement(1.0);
+        metrics::gauge!(crate::observability::metrics::INFLIGHT_REQUESTS).decrement(1.0);
     }
 }
 
@@ -75,8 +78,7 @@ async fn serve(
 
     // CORS preflight: by default runs the same origin (and optional rate)
     // guards as real traffic so blacklisted origins cannot harvest 204s
-    // and OPTIONS cannot bypass the limiter. Set
-    // `security.preflight.mode = "open"` for classic cors-anywhere behaviour.
+    // and OPTIONS cannot bypass the limiter.
     if is_preflight(&request) {
         let preflight = &policies.config.security.preflight;
         if preflight.mode == PreflightMode::Enforce {
@@ -94,20 +96,15 @@ async fn serve(
         return Ok(Response::from_parts(parts, axum_body));
     }
 
-    // Stage 1: cheap origin / method / required-header guards.
     policies.guard.check_origin(&request)?;
 
-    // Extract and validate the upstream target URL.
     let target = proxy::extract_target(request.uri())?;
+    // First-hop admission (redirect hops re-check inside Upstream::execute).
     policies.target_policy.check(&target)?;
 
-    // Stage 2: multi-dimensional rate limiting now that we know the target.
     policies
         .guard
         .check_rate(&request, client_ip, Some(target.host.as_str()))?;
-
-    // Stage 3: per-host circuit breaker.
-    policies.circuit.check(&target.host)?;
 
     drop(policies);
     execute_proxy(state, request, target, client_ip).await
@@ -119,9 +116,6 @@ async fn execute_proxy(
     target: TargetUrl,
     client_ip: IpAddr,
 ) -> Result<Response, ServerError> {
-    // The listener (and therefore the inbound scheme/port) is locked at
-    // startup; pull it from the immutable snapshot so a SIGHUP-triggered
-    // reload mid-request cannot change it underneath us.
     let tls_on = state.build.immutable_server.tls.is_some();
     let local_port = state.build.immutable_server.bind.port();
 
@@ -142,8 +136,6 @@ async fn execute_proxy(
     let policies = state.build.policies();
 
     let (mut parts, body) = request.into_parts();
-    // Preserve inbound headers so that CORS can still reflect the original
-    // Origin after the request has been consumed by the upstream client.
     let inbound_headers = parts.headers.clone();
 
     policies.request_filter.apply(&mut parts.headers);
@@ -163,54 +155,49 @@ async fn execute_proxy(
     parts.uri = target.to_uri()?;
     let outbound = Request::from_parts(parts, axum_to_upstream_body(body));
 
-    let host = target.host.clone();
-    let count_5xx = policies.circuit.count_5xx();
-
     let upstream_started = Instant::now();
-    let upstream_response = policies.upstream.execute(outbound).await;
+    let upstream_response = policies
+        .upstream
+        .execute(outbound, &policies.circuit)
+        .await;
     let upstream_elapsed = upstream_started.elapsed().as_secs_f64();
 
     let response = match upstream_response {
         Ok(response) => {
-            if count_5xx && response.status().is_server_error() {
-                policies.circuit.record_failure(&host);
-            } else {
-                policies.circuit.record_success(&host);
-            }
             metrics::histogram!(
-                stats::UPSTREAM_DURATION,
+                crate::observability::metrics::UPSTREAM_DURATION,
                 "status" => response.status().as_u16().to_string()
             )
             .record(upstream_elapsed);
             response
         }
         Err(error) => {
-            // Transport / upstream failures trip the breaker; client policy
-            // errors (SSRF, invalid URL) are not host health signals.
-            if matches!(
-                error.kind(),
-                corx_core::error::ErrorKind::UpstreamUnreachable
-                    | corx_core::error::ErrorKind::UpstreamTimeout
-                    | corx_core::error::ErrorKind::TlsFailure
-                    | corx_core::error::ErrorKind::DnsFailure
-            ) {
-                policies.circuit.record_failure(&host);
-            }
             let kind = error.kind();
-            metrics::histogram!(stats::UPSTREAM_DURATION, "status" => kind.as_str())
-                .record(upstream_elapsed);
+            metrics::histogram!(
+                crate::observability::metrics::UPSTREAM_DURATION,
+                "status" => kind.as_str()
+            )
+            .record(upstream_elapsed);
             return Err(error.into());
         }
     };
 
-    Ok(shape_response(response, &state, &target, &inbound_headers))
+    let redirect_policy = policies.config.limits.redirect_policy;
+    Ok(shape_response(
+        response,
+        &state,
+        &target,
+        &inbound_headers,
+        redirect_policy,
+    ))
 }
 
 fn shape_response(
     response: hyper::Response<hyper::body::Incoming>,
     state: &AppState,
     target: &TargetUrl,
-    request_headers: &HeaderMap,
+    _request_headers: &HeaderMap,
+    redirect_policy: RedirectPolicy,
 ) -> Response {
     let policies = state.build.policies();
 
@@ -222,11 +209,34 @@ fn shape_response(
     }
     append_via_header(&mut response_parts.headers);
 
-    let mut reassembled = hyper::Response::from_parts(response_parts, response_body);
-    proxy::apply_to_response(&mut reassembled, request_headers, policies.cors.as_ref());
+    if redirect_policy == RedirectPolicy::Rewrite {
+        rewrite_location_header(&mut response_parts.headers);
+    }
 
-    let (final_parts, final_body) = reassembled.into_parts();
-    let counted = CountingBody::new(final_body, "response");
-    let axum_body = AxumBody::new(counted.map_err(axum::Error::new));
-    Response::from_parts(final_parts, axum_body)
+    // CORS is applied solely by `cors_layer` so every response path (errors,
+    // load-shed, success) shares one owner.
+
+    let max_response = state.build.immutable_limits.max_response_body_bytes;
+    let counted = CountingBody::new(response_body, "response");
+    let limited = LimitingBody::new(counted, max_response);
+    let axum_body = AxumBody::new(limited.map_err(axum::Error::new));
+    Response::from_parts(response_parts, axum_body)
+}
+
+/// Rewrite absolute `Location` values into the cors-anywhere path-prefix form
+/// so the browser stays on the proxy for the next hop.
+fn rewrite_location_header(headers: &mut HeaderMap) {
+    let Some(location) = headers.get(header::LOCATION) else {
+        return;
+    };
+    let Ok(raw) = location.to_str() else {
+        return;
+    };
+    if !(raw.starts_with("http://") || raw.starts_with("https://")) {
+        return;
+    }
+    let rewritten = format!("/{raw}");
+    if let Ok(value) = HeaderValue::from_str(&rewritten) {
+        headers.insert(header::LOCATION, value);
+    }
 }

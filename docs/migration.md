@@ -29,10 +29,10 @@ is now binary-only.
 omit it pick up `inject = true`, `inject_request_id = true`,
 `trust_inbound_xff = false`.
 
-### Rate limit
+### Rate limit and concurrency
 
-The flat single-bucket schema was replaced with an explicit
-multi-dimensional layout:
+The flat single-bucket schema was replaced with multi-dimensional GCRA
+plus a separate process inflight cap:
 
 ```toml
 # OLD (0.1)
@@ -40,14 +40,19 @@ multi-dimensional layout:
 rps = 10
 burst = 20
 
-# NEW (0.2)
+# NEW (0.2+)
+[limits]
+inflight_max = 1024                 # load-shed (was rate_limit.global.inflight_max)
+max_response_body_bytes = 52428800  # streaming response cap; 0 = unlimited
+
 [rate_limit]
-enabled = true
+enabled = true                      # default true
+max_keys = 16384                    # fail-closed cardinality for keyed dims
 
 [rate_limit.origin]
 rps = 50
 burst = 100
-unlimited_origins = []
+unlimited_patterns = []
 
 [rate_limit.ip]
 rps = 20
@@ -59,14 +64,20 @@ rps = 100
 burst = 200
 
 [rate_limit.global]
-rps = 0
-burst = 0
-inflight_max = 1024
+rps = 5000
+burst = 10000
+# inflight_max removed — use limits.inflight_max
 ```
 
-Set any sub-section's `rps` to `0` to disable that dimension while
+Set any sub-section's `rps` to `0` to disable that GCRA dimension while
 leaving the others active. Set `[rate_limit].enabled = false` to disable
-every dimension at once.
+every GCRA dimension at once (inflight load-shed is independent).
+
+### Target admission on redirects
+
+`[target]` allowlist / denylist / `https_only` apply on the **first hop
+and every redirect hop**. Configs that relied on following 3xx to hosts
+outside the allowlist will now get `403` / `target_not_allowed`.
 
 ### CORS
 

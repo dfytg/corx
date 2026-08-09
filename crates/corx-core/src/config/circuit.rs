@@ -10,7 +10,7 @@ use super::default_true;
 ///
 /// State is not shared across replicas; pair with external rate limiting when
 /// multi-instance consistency is required.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CircuitBreakerConfig {
     /// Master switch. Default: enabled with conservative thresholds.
@@ -31,6 +31,10 @@ pub struct CircuitBreakerConfig {
     /// Count upstream HTTP 5xx as failures (in addition to connect/timeout).
     #[serde(default = "default_true")]
     pub count_5xx: bool,
+    /// Soft cap on tracked host keys. Idle closed entries are evicted when
+    /// the map exceeds this size (cardinality / abuse defence).
+    #[serde(default = "default_max_hosts")]
+    pub max_hosts: usize,
 }
 
 const fn default_failure_threshold() -> u32 {
@@ -49,6 +53,10 @@ const fn default_open_duration() -> Duration {
     Duration::from_secs(30)
 }
 
+const fn default_max_hosts() -> usize {
+    8192
+}
+
 impl Default for CircuitBreakerConfig {
     fn default() -> Self {
         Self {
@@ -58,6 +66,7 @@ impl Default for CircuitBreakerConfig {
             open_duration: default_open_duration(),
             half_open_max: default_half_open_max(),
             count_5xx: true,
+            max_hosts: default_max_hosts(),
         }
     }
 }

@@ -6,5 +6,5 @@
 mod circuit;
 mod target;
 
-pub use self::circuit::{CircuitBreaker, CircuitDecision};
+pub use self::circuit::{CircuitBreaker, CircuitHop};
 pub use self::target::TargetPolicy;

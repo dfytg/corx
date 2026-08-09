@@ -41,7 +41,9 @@ layout shared across every duration metric.
 | `corx_upstream_errors_total`          | counter   | `kind`                          |
 | `corx_inflight_requests`              | gauge     |                                 |
 | `corx_bytes_transferred_total`        | counter   | `direction = request \| response` |
-| `corx_rate_limited_total`             | counter   | `dimension`                     |
+| `corx_rate_limited_total`             | counter   | `dimension` (`origin` \| `ip` \| `target_host` \| `global` \| `inflight`) |
+| `corx_circuit_opens_total`            | counter   |                                 |
+| `corx_circuit_rejects_total`          | counter   |                                 |
 | `corx_ssrf_blocks_total`              | counter   | `cidr`                          |
 | `corx_dns_lookups_total`              | counter   | `result = literal \| ok \| error` |
 | `corx_redirect_hops`                  | histogram | `target_host`                   |

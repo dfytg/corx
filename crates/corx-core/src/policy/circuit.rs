@@ -10,20 +10,12 @@ use crate::config::CircuitBreakerConfig;
 use crate::error::ProxyError;
 use crate::observability;
 
-/// Outcome of a circuit check before dispatching upstream.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum CircuitDecision {
-    /// Proceed with the request.
-    Closed,
-    /// Proceed as a limited half-open probe.
-    HalfOpenProbe,
-}
-
 #[derive(Debug, Clone, Copy)]
 enum State {
     Closed,
     Open { until: Instant },
-    HalfOpen { probes: u32 },
+    /// `since` bounds half-open so cancelled probes cannot lock a host forever.
+    HalfOpen { probes: u32, since: Instant },
 }
 
 struct HostCircuit {
@@ -38,6 +30,18 @@ impl HostCircuit {
             state: State::Closed,
             failures: Vec::new(),
         }
+    }
+
+    const fn is_idle_closed(&self) -> bool {
+        matches!(self.state, State::Closed) && self.failures.is_empty()
+    }
+
+    const fn is_closed(&self) -> bool {
+        matches!(self.state, State::Closed)
+    }
+
+    fn is_expired_open(&self, now: Instant) -> bool {
+        matches!(self.state, State::Open { until } if now >= until)
     }
 }
 
@@ -54,6 +58,7 @@ struct Inner {
     open_duration: Duration,
     half_open_max: u32,
     count_5xx: bool,
+    max_hosts: usize,
     hosts: DashMap<String, HostCircuit, RandomState>,
 }
 
@@ -62,6 +67,7 @@ impl std::fmt::Debug for CircuitBreaker {
         f.debug_struct("CircuitBreaker")
             .field("enabled", &self.inner.enabled)
             .field("hosts", &self.inner.hosts.len())
+            .field("max_hosts", &self.inner.max_hosts)
             .finish_non_exhaustive()
     }
 }
@@ -78,6 +84,7 @@ impl CircuitBreaker {
                 open_duration: cfg.open_duration,
                 half_open_max: cfg.half_open_max.max(1),
                 count_5xx: cfg.count_5xx,
+                max_hosts: cfg.max_hosts.max(1),
                 hosts: DashMap::with_hasher(RandomState::default()),
             }),
         }
@@ -91,26 +98,35 @@ impl CircuitBreaker {
 
     /// Check whether a request to `host` may proceed.
     ///
+    /// Half-open probe budgeting is enforced inside this method. Callers must
+    /// always pair a successful `check` with [`Self::record_success`] or
+    /// [`Self::record_failure`] (or a drop-guard that records failure) so a
+    /// cancelled probe cannot leave the host stuck in half-open forever.
+    ///
     /// # Errors
     ///
     /// Returns [`ProxyError::CircuitOpen`] when the breaker is open.
-    pub fn check(&self, host: &str) -> Result<CircuitDecision, ProxyError> {
+    pub fn check(&self, host: &str) -> Result<(), ProxyError> {
         if !self.inner.enabled {
-            return Ok(CircuitDecision::Closed);
+            return Ok(());
         }
         let now = Instant::now();
         let half_open_max = self.inner.half_open_max;
+        let open_duration = self.inner.open_duration;
         let mut entry = self
             .inner
             .hosts
             .entry(host.to_owned())
             .or_insert_with(HostCircuit::new);
-        let decision = transition_on_check(&mut entry, now, half_open_max);
+        let allowed = transition_on_check(&mut entry, now, half_open_max, open_duration);
         drop(entry);
-        decision.ok_or_else(|| {
+        if allowed {
+            self.evict_if_needed(now);
+            Ok(())
+        } else {
             metrics::counter!(observability::CIRCUIT_REJECTS).increment(1);
-            ProxyError::CircuitOpen(host.to_owned())
-        })
+            Err(ProxyError::CircuitOpen(host.to_owned()))
+        }
     }
 
     /// Record a successful upstream response (or client-error that is not a
@@ -145,6 +161,43 @@ impl CircuitBreaker {
             metrics::counter!(observability::CIRCUIT_OPENS).increment(1);
             tracing::warn!(host, "circuit breaker opened");
         }
+        self.evict_if_needed(now);
+    }
+
+    /// Number of tracked hosts (test / ops helper).
+    #[must_use]
+    pub fn tracked_hosts(&self) -> usize {
+        self.inner.hosts.len()
+    }
+
+    fn evict_if_needed(&self, now: Instant) {
+        let max = self.inner.max_hosts;
+        if self.inner.hosts.len() <= max {
+            return;
+        }
+        // Prefer reclaiming entries that no longer need protection state.
+        self.evict_matching(max, HostCircuit::is_idle_closed);
+        if self.inner.hosts.len() > max {
+            self.evict_matching(max, |c| c.is_expired_open(now));
+        }
+        if self.inner.hosts.len() > max {
+            self.evict_matching(max, HostCircuit::is_closed);
+        }
+    }
+
+    fn evict_matching(&self, max: usize, pred: impl Fn(&HostCircuit) -> bool) {
+        let excess = self.inner.hosts.len().saturating_sub(max);
+        if excess == 0 {
+            return;
+        }
+        let mut removed = 0usize;
+        self.inner.hosts.retain(|_, circuit| {
+            if removed >= excess || !pred(circuit) {
+                return true;
+            }
+            removed = removed.saturating_add(1);
+            false
+        });
     }
 }
 
@@ -152,20 +205,35 @@ fn transition_on_check(
     entry: &mut HostCircuit,
     now: Instant,
     half_open_max: u32,
-) -> Option<CircuitDecision> {
+    open_duration: Duration,
+) -> bool {
     match entry.state {
-        State::Closed => Some(CircuitDecision::Closed),
+        State::Closed => true,
         State::Open { until } if now >= until => {
-            entry.state = State::HalfOpen { probes: 1 };
-            Some(CircuitDecision::HalfOpenProbe)
+            entry.state = State::HalfOpen {
+                probes: 1,
+                since: now,
+            };
+            true
         }
-        State::HalfOpen { probes } if probes < half_open_max => {
+        State::HalfOpen { probes, since } if probes < half_open_max => {
             entry.state = State::HalfOpen {
                 probes: probes.saturating_add(1),
+                since,
             };
-            Some(CircuitDecision::HalfOpenProbe)
+            true
         }
-        State::Open { .. } | State::HalfOpen { .. } => None,
+        // Probe budget exhausted: if the half-open window elapsed (cancelled
+        // probes never settled), open a new probe window instead of locking
+        // the host permanently.
+        State::HalfOpen { since, .. } if now.duration_since(since) >= open_duration => {
+            entry.state = State::HalfOpen {
+                probes: 1,
+                since: now,
+            };
+            true
+        }
+        State::Open { .. } | State::HalfOpen { .. } => false,
     }
 }
 
@@ -191,6 +259,58 @@ fn record_failure_on(
     true
 }
 
+/// RAII guard: records a failure if the hop is abandoned (cancel / panic)
+/// without an explicit success or failure settlement.
+#[derive(Debug)]
+pub struct CircuitHop<'a> {
+    circuit: &'a CircuitBreaker,
+    host: String,
+    settled: bool,
+}
+
+impl<'a> CircuitHop<'a> {
+    /// Admit `host` and return a guard that must be settled.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`CircuitBreaker::check`].
+    pub fn admit(circuit: &'a CircuitBreaker, host: impl Into<String>) -> Result<Self, ProxyError> {
+        let host = host.into();
+        circuit.check(&host)?;
+        Ok(Self {
+            circuit,
+            host,
+            settled: false,
+        })
+    }
+
+    /// Host this hop was admitted for.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// Mark the hop successful (disarms drop-failure).
+    pub fn success(mut self) {
+        self.circuit.record_success(&self.host);
+        self.settled = true;
+    }
+
+    /// Mark the hop failed (disarms drop-failure).
+    pub fn failure(mut self) {
+        self.circuit.record_failure(&self.host);
+        self.settled = true;
+    }
+}
+
+impl Drop for CircuitHop<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.circuit.record_failure(&self.host);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -206,6 +326,7 @@ mod tests {
             open_duration: Duration::from_millis(50),
             half_open_max: 1,
             count_5xx: true,
+            max_hosts: 8192,
         }
     }
 
@@ -236,6 +357,41 @@ mod tests {
         let cb = CircuitBreaker::from_config(&c);
         cb.record_failure("h.test");
         cb.record_failure("h.test");
+        assert!(cb.check("h.test").is_ok());
+    }
+
+    #[test]
+    fn max_hosts_evicts_idle_closed() {
+        let mut c = cfg(10);
+        c.max_hosts = 2;
+        let cb = CircuitBreaker::from_config(&c);
+        assert!(cb.check("a.test").is_ok());
+        assert!(cb.check("b.test").is_ok());
+        assert!(cb.check("c.test").is_ok());
+        assert!(cb.tracked_hosts() <= 2);
+    }
+
+    #[test]
+    fn hop_guard_records_failure_on_drop() {
+        let cb = CircuitBreaker::from_config(&cfg(1));
+        {
+            let hop = CircuitHop::admit(&cb, "h.test").expect("admit");
+            assert_eq!(hop.host(), "h.test");
+            // drop without settle
+        }
+        assert!(
+            cb.check("h.test").is_err(),
+            "unsettled hop must count as failure and trip threshold=1"
+        );
+    }
+
+    #[test]
+    fn hop_guard_success_disarms_drop() {
+        let cb = CircuitBreaker::from_config(&cfg(1));
+        {
+            let hop = CircuitHop::admit(&cb, "h.test").expect("admit");
+            hop.success();
+        }
         assert!(cb.check("h.test").is_ok());
     }
 }

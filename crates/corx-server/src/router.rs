@@ -7,6 +7,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::routing::{any, get};
 use http::StatusCode;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
@@ -34,10 +35,17 @@ impl AppState {
 }
 
 /// Builds the `axum` router with every middleware layer registered.
+///
+/// Layer order (outer → inner):
+///
+/// ```text
+/// Trace → access_log → cors → Timeout → BodyLimit → CatchPanic
+///   → header_limit → load_shed → auth → handler
+/// ```
+///
+/// CORS sits outside timeout / body-limit / auth / load-shed so 401/503/431/
+/// 504/413 responses still carry browser-readable ACAO headers.
 pub fn build_router(state: AppState) -> Router<()> {
-    // Body size and timeout are baked into the router at startup; they
-    // come from the immutable snapshot for the same reason a SIGHUP reload
-    // cannot change them mid-flight.
     let max_body = state.build.immutable_limits.max_request_body_bytes;
     let request_timeout = state.build.immutable_limits.request_timeout;
     let metrics_path = state.build.immutable_metrics_endpoint.clone();
@@ -61,15 +69,11 @@ pub fn build_router(state: AppState) -> Router<()> {
         router = router.route(&metrics_path, get(handlers::prometheus_metrics));
     }
 
+    let cors_state = state.clone();
+
     router
         .fallback(any(handlers::proxy))
         .method_not_allowed_fallback(handlers::not_found)
-        // CORS runs first (innermost), so even responses from later layers
-        // gain the headers; load-shed sits just outside it so 503s also
-        // leave with valid CORS metadata. Bearer auth is outside the
-        // handler but inside load-shed so rejected auths still count as
-        // load for abuse control.
-        .layer(middleware::from_fn_with_state(state.clone(), cors_layer))
         .layer(middleware::from_fn_with_state(state.clone(), auth_layer))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -80,14 +84,14 @@ pub fn build_router(state: AppState) -> Router<()> {
             header_limit_layer,
         ))
         .with_state(state)
+        .layer(CatchPanicLayer::new())
         .layer(DefaultBodyLimit::max(body_limit))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
             request_timeout,
         ))
-        // Access log sits at the outermost level so it observes the *final*
-        // status (including timeouts and load-shed responses) and the wall
-        // clock duration the client actually saw.
+        // Outside timeout/body so 504/413 also get CORS headers.
+        .layer(middleware::from_fn_with_state(cors_state, cors_layer))
         .layer(middleware::from_fn(access_log_layer))
         .layer(TraceLayer::new_for_http())
 }

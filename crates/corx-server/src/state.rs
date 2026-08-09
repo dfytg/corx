@@ -4,17 +4,20 @@
 //!
 //! Fields fall into two camps:
 //!
-//! * **Hot-swappable** \u2014 CORS, header filters, request guards (origin lists +
+//! * **Hot-swappable** — CORS, header filters, request guards (origin lists +
 //!   rate limiter), the upstream HTTP client and the source [`Config`] are
 //!   bundled into [`LivePolicies`] and stored behind an
 //!   [`ArcSwap`](arc_swap::ArcSwap). Each request loads a single snapshot so
 //!   the policy view is consistent for the whole handler chain even if a
 //!   reload races in mid-request.
-//! * **Frozen-at-startup** \u2014 the listener (bind address, TLS, HTTP/2 toggle),
+//! * **Process state retained across reload when config is unchanged** —
+//!   `circuit` and `rate` (`RateLimiter`) keep their in-memory maps so a
+//!   SIGHUP that only tweaks CORS does not reset open breakers or GCRA
+//!   budgets. `upstream` (connection pool + SSRF + target policy) is rebuilt
+//!   when ssrf / target / upstream / connect / redirect settings change.
+//! * **Frozen-at-startup** — the listener (bind address, TLS, HTTP/2 toggle),
 //!   request body limits and timeouts that are baked into the `axum::Router`,
-//!   and the metrics endpoint path. These are recorded under `immutable_*`
-//!   so a reload can detect attempts to change them and reject the new
-//!   configuration with a clear log message.
+//!   and the metrics endpoint path.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -28,10 +31,6 @@ use crate::middleware::{OriginPolicy, RateLimiter, RequestGuard};
 use crate::observability::MetricsHandle;
 
 /// Atomically-replaceable bundle of policy state.
-///
-/// Every request handler dereferences exactly one snapshot so views are
-/// internally consistent even while a SIGHUP-driven reload swaps the
-/// pointer underneath.
 #[derive(Debug)]
 pub struct LivePolicies {
     /// Source configuration this snapshot was built from.
@@ -45,14 +44,13 @@ pub struct LivePolicies {
     /// Inbound guards (origin allow/deny, multi-dimensional rate limiter,
     /// required-header check).
     pub guard: RequestGuard,
-    /// Target host / scheme admission.
+    /// Target host / scheme admission (also enforced inside `upstream` on
+    /// every redirect hop).
     pub target_policy: TargetPolicy,
-    /// Per-host circuit breaker (process-local).
+    /// Per-host circuit breaker (process-local; retained across reload when
+    /// circuit config is unchanged).
     pub circuit: CircuitBreaker,
-    /// Upstream HTTP client. Rebuilt on reload, so SIGHUP discards the
-    /// existing connection pool. Reloads are deliberate and rare, so this
-    /// trade-off is acceptable in exchange for picking up fresh SSRF,
-    /// timeout and pool-tuning settings without process restart.
+    /// Upstream HTTP client (pool + SSRF + hop target policy).
     pub upstream: Upstream,
 }
 
@@ -64,30 +62,57 @@ impl LivePolicies {
     /// Returns an error when any component fails to compile (invalid
     /// regex, malformed CIDR, missing TLS material, etc.).
     pub fn build(config: Config) -> anyhow::Result<Self> {
+        Self::build_from(config, None)
+    }
+
+    /// Build a new snapshot, reusing process state from `previous` when the
+    /// corresponding config sections are unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any component fails to compile.
+    pub fn build_from(config: Config, previous: Option<&Self>) -> anyhow::Result<Self> {
         let cors = CorsPolicy::from_config(&config.cors);
-        let request_filter = HeaderFilter::new(&config.security.remove_request_headers);
-        let response_filter = HeaderFilter::new(&config.security.remove_response_headers);
+        let request_filter = HeaderFilter::try_new(&config.security.remove_request_headers)
+            .map_err(|err| anyhow::anyhow!("security.remove_request_headers: {err}"))?;
+        let response_filter = HeaderFilter::try_new(&config.security.remove_response_headers)
+            .map_err(|err| anyhow::anyhow!("security.remove_response_headers: {err}"))?;
 
-        let resolver = corx_core::proxy::build_resolver();
-        let ssrf = SsrfGuard::new(&config.ssrf, resolver);
+        let target_policy = TargetPolicy::from_config(&config.target);
 
-        let client_config = corx_core::proxy::ClientConfig {
-            pool_max_idle_per_host: config.upstream.pool_max_idle_per_host,
-            pool_idle_timeout: config.upstream.pool_idle_timeout,
-            connect_timeout: config.limits.connect_timeout,
-            max_redirects: config.limits.max_redirects,
-            allow_https_to_http_downgrade: config.limits.allow_https_to_http_downgrade,
-            redirect_policy: config.limits.redirect_policy,
-            user_agent: config.upstream.user_agent.clone(),
+        let rate_limiter = match previous {
+            Some(prev) if prev.config.rate_limit == config.rate_limit => prev.guard.rate_limiter(),
+            _ => RateLimiter::from_config(&config.rate_limit)?,
         };
-        let upstream = Upstream::new(client_config, ssrf)
-            .map_err(|err| anyhow::anyhow!("upstream client: {err}"))?;
 
         let origin_policy = OriginPolicy::from_config(&config.security);
-        let rate_limiter = RateLimiter::from_config(&config.rate_limit)?;
         let guard = RequestGuard::new(origin_policy, rate_limiter);
-        let target_policy = TargetPolicy::from_config(&config.target);
-        let circuit = CircuitBreaker::from_config(&config.circuit_breaker);
+
+        let circuit = match previous {
+            Some(prev) if prev.config.circuit_breaker == config.circuit_breaker => {
+                prev.circuit.clone()
+            }
+            _ => CircuitBreaker::from_config(&config.circuit_breaker),
+        };
+
+        let upstream = match previous {
+            Some(prev) if upstream_config_eq(&prev.config, &config) => prev.upstream.clone(),
+            _ => {
+                let resolver = corx_core::proxy::build_resolver();
+                let ssrf = SsrfGuard::new(&config.ssrf, resolver);
+                let client_config = corx_core::proxy::ClientConfig {
+                    pool_max_idle_per_host: config.upstream.pool_max_idle_per_host,
+                    pool_idle_timeout: config.upstream.pool_idle_timeout,
+                    connect_timeout: config.limits.connect_timeout,
+                    max_redirects: config.limits.max_redirects,
+                    allow_https_to_http_downgrade: config.limits.allow_https_to_http_downgrade,
+                    redirect_policy: config.limits.redirect_policy,
+                    user_agent: config.upstream.user_agent.clone(),
+                };
+                Upstream::new(client_config, ssrf, target_policy.clone())
+                    .map_err(|err| anyhow::anyhow!("upstream client: {err}"))?
+            }
+        };
 
         Ok(Self {
             config: Arc::new(config),
@@ -102,10 +127,18 @@ impl LivePolicies {
     }
 }
 
+/// Fields that force a full upstream client rebuild (pool + SSRF + hop policy).
+fn upstream_config_eq(a: &Config, b: &Config) -> bool {
+    a.ssrf == b.ssrf
+        && a.target == b.target
+        && a.upstream == b.upstream
+        && a.limits.connect_timeout == b.limits.connect_timeout
+        && a.limits.max_redirects == b.limits.max_redirects
+        && a.limits.allow_https_to_http_downgrade == b.limits.allow_https_to_http_downgrade
+        && a.limits.redirect_policy == b.limits.redirect_policy
+}
+
 /// All dependencies required by the server.
-///
-/// Cheap to clone (everything is `Arc`-shared); cloned once per request via
-/// the `axum` extractor so the hot path is wait-free.
 #[derive(Clone, Debug)]
 pub struct ServerBuild {
     /// Hot-swappable policy snapshot.

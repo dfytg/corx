@@ -467,6 +467,7 @@ dependencies = [
  "axum-server",
  "bytes",
  "corx-core",
+ "dashmap",
  "figment",
  "foldhash 0.1.5",
  "futures",

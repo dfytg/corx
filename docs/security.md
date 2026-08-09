@@ -47,7 +47,8 @@ classic cors-anywhere behaviour (preflight before guards).
 
 ## Target admission
 
-`[target]` filters hosts and schemes **before** DNS/SSRF:
+`[target]` filters hosts and schemes **before** DNS/SSRF on the first hop,
+and again on **every redirect hop** before connect:
 
 - `any_public` (default) — any host; SSRF still applies to resolved IPs
 - `allowlist` / `denylist` — exact hosts or DNS suffixes (`.example.com`)
@@ -108,7 +109,9 @@ is the one Prometheus attributes the rejection to via
 - `origin` (per `Origin` header)
 - `ip` (per remote address; CIDRs in `trusted_cidrs` are exempted)
 - `target_host` (per validated upstream host)
-- `global` (process-wide), backed by an inflight gauge for load shed
+- `global` (process-wide GCRA)
+- process **inflight** concurrency lives under `limits.inflight_max`
+  (metric dimension `inflight`, independent of GCRA `enabled`)
 
 ## TLS / mTLS / FIPS
 

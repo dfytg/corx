@@ -238,6 +238,10 @@ impl ProxyError {
     /// Renders the error into the wire-level pieces required to construct a
     /// HTTP response: status code and the JSON-serialisable payload.
     ///
+    /// `message` is a **client-safe** short phrase derived from
+    /// [`ErrorKind`]. Full diagnostic detail stays on the server log via
+    /// [`Display`](std::fmt::Display) / `tracing`.
+    ///
     /// Adapters typically:
     ///
     /// 1. Set the response status to `payload.0`.
@@ -251,8 +255,33 @@ impl ProxyError {
             kind.status(),
             ErrorPayload {
                 error: kind.as_str(),
-                message: self.to_string(),
+                message: kind.client_message().to_owned(),
             },
         )
+    }
+}
+
+impl ErrorKind {
+    /// Stable, non-sensitive phrase safe to return to untrusted clients.
+    #[must_use]
+    pub const fn client_message(self) -> &'static str {
+        match self {
+            Self::InvalidUrl => "invalid target url",
+            Self::MissingRequiredHeader => "missing required header",
+            Self::OriginNotAllowed => "origin not allowed",
+            Self::SsrfBlocked => "target address blocked by ssrf policy",
+            Self::DnsFailure => "dns lookup failed",
+            Self::UpstreamUnreachable => "upstream unreachable",
+            Self::UpstreamTimeout => "upstream timed out",
+            Self::TooManyRedirects => "too many redirects",
+            Self::TlsFailure => "tls handshake failed",
+            Self::PayloadTooLarge => "payload too large",
+            Self::RateLimited => "rate limited",
+            Self::TargetNotAllowed => "target not allowed",
+            Self::Unauthorized => "unauthorized",
+            Self::CircuitOpen => "circuit open for target host",
+            Self::RedirectBlocked => "redirect blocked by policy",
+            Self::Io | Self::Internal => "internal error",
+        }
     }
 }

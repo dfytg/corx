@@ -60,11 +60,11 @@ async fn serve(config_path: Option<&Path>) -> anyhow::Result<()> {
     let build = ServerBuild::from_config(config.clone(), metrics)?;
     let ready = std::sync::Arc::clone(&build.ready);
 
-    // Hot-reload watcher (Unix only): SIGHUP triggers a fresh load of the
-    // same config path. Hot-swappable fields are atomically replaced via
-    // `arc-swap`; immutable fields (bind address, TLS material) only log a
-    // warning and are otherwise ignored. The watcher exits with the
-    // server.
+    // Hot-reload watcher (Unix only): SIGHUP reloads the same config path.
+    // Hot-swappable policy is swapped via `arc-swap`. Attempts to change
+    // immutable fields (bind, TLS, body/header limits, timeouts, metrics
+    // path, inflight/response caps) are rejected and the previous snapshot
+    // stays active.
     #[cfg(unix)]
     {
         let owned_path = config_path.map(Path::to_path_buf);

@@ -12,9 +12,9 @@ target/
 charts/
 docs/
 
-# Test fixtures and benches that are not needed at runtime.
+# Integration tests are not needed for the image build; keep benches so
+# cargo-chef can parse package manifests that declare [[bench]] targets.
 **/tests/
-**/benches/
 **/*.bench.rs
 
 # Local-only files

@@ -52,7 +52,12 @@ jobs:
         with:
           kubeconform: v0.6.7
       - run: |
-          kubeconform -strict -summary -kubernetes-version 1.30.0 /tmp/rendered.yaml /tmp/rendered-extra.yaml
+          # ServiceMonitor is a Prometheus Operator CRD; pull its schema from
+          # the community CRD catalog so -strict validation can resolve it.
+          kubeconform -strict -summary -kubernetes-version 1.30.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            /tmp/rendered.yaml /tmp/rendered-extra.yaml
 
   publish:
     name: Publish chart

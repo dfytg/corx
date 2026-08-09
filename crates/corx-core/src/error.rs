@@ -49,6 +49,14 @@ pub enum ErrorKind {
     PayloadTooLarge,
     /// The client exceeded its rate limit budget.
     RateLimited,
+    /// The upstream target host/scheme is not allowed by target policy.
+    TargetNotAllowed,
+    /// Authentication failed (missing or invalid bearer token).
+    Unauthorized,
+    /// The per-host circuit breaker is open.
+    CircuitOpen,
+    /// Upstream redirect was blocked by policy.
+    RedirectBlocked,
     /// A server-side I/O error occurred.
     Io,
     /// An uncategorised internal error.
@@ -59,9 +67,18 @@ impl ErrorKind {
     /// Maps the kind onto the HTTP status code returned to the client.
     #[must_use]
     pub const fn status(self) -> StatusCode {
+        // Several kinds intentionally share a status while remaining distinct
+        // machine-readable slugs (`as_str`).
+        #[allow(
+            clippy::match_same_arms,
+            reason = "distinct ErrorKinds may share an HTTP status by design"
+        )]
         match self {
             Self::InvalidUrl | Self::MissingRequiredHeader => StatusCode::BAD_REQUEST,
-            Self::OriginNotAllowed | Self::SsrfBlocked => StatusCode::FORBIDDEN,
+            Self::OriginNotAllowed
+            | Self::SsrfBlocked
+            | Self::TargetNotAllowed
+            | Self::RedirectBlocked => StatusCode::FORBIDDEN,
             Self::DnsFailure | Self::UpstreamUnreachable | Self::TlsFailure => {
                 StatusCode::BAD_GATEWAY
             }
@@ -69,6 +86,8 @@ impl ErrorKind {
             Self::TooManyRedirects => StatusCode::LOOP_DETECTED,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::CircuitOpen => StatusCode::SERVICE_UNAVAILABLE,
             Self::Io | Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -88,6 +107,10 @@ impl ErrorKind {
             Self::TlsFailure => "tls_failure",
             Self::PayloadTooLarge => "payload_too_large",
             Self::RateLimited => "rate_limited",
+            Self::TargetNotAllowed => "target_not_allowed",
+            Self::Unauthorized => "unauthorized",
+            Self::CircuitOpen => "circuit_open",
+            Self::RedirectBlocked => "redirect_blocked",
             Self::Io => "io",
             Self::Internal => "internal",
         }
@@ -148,6 +171,22 @@ pub enum ProxyError {
     #[error("rate limited")]
     RateLimited,
 
+    /// Target host or scheme is outside the configured target policy.
+    #[error("target not allowed: {0}")]
+    TargetNotAllowed(String),
+
+    /// Missing or invalid bearer token.
+    #[error("unauthorized: {0}")]
+    Unauthorized(&'static str),
+
+    /// Per-host circuit breaker is open.
+    #[error("circuit open for host `{0}`")]
+    CircuitOpen(String),
+
+    /// Redirect policy refused to follow or rewrite the hop.
+    #[error("redirect blocked: {0}")]
+    RedirectBlocked(String),
+
     /// Low-level I/O failure.
     #[error("i/o error: {0}")]
     Io(#[from] io::Error),
@@ -173,6 +212,10 @@ impl ProxyError {
             Self::Tls(_) => ErrorKind::TlsFailure,
             Self::PayloadTooLarge => ErrorKind::PayloadTooLarge,
             Self::RateLimited => ErrorKind::RateLimited,
+            Self::TargetNotAllowed(_) => ErrorKind::TargetNotAllowed,
+            Self::Unauthorized(_) => ErrorKind::Unauthorized,
+            Self::CircuitOpen(_) => ErrorKind::CircuitOpen,
+            Self::RedirectBlocked(_) => ErrorKind::RedirectBlocked,
             Self::Io(_) => ErrorKind::Io,
             Self::Internal(_) => ErrorKind::Internal,
         }

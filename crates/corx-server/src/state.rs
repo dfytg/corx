@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use arc_swap::{ArcSwap, Guard};
 use corx_core::config::{Config, LimitsConfig, ServerConfig};
+use corx_core::policy::{CircuitBreaker, TargetPolicy};
 use corx_core::proxy::{CorsPolicy, HeaderFilter, SsrfGuard, Upstream};
 
 use crate::middleware::{OriginPolicy, RateLimiter, RequestGuard};
@@ -44,6 +45,10 @@ pub struct LivePolicies {
     /// Inbound guards (origin allow/deny, multi-dimensional rate limiter,
     /// required-header check).
     pub guard: RequestGuard,
+    /// Target host / scheme admission.
+    pub target_policy: TargetPolicy,
+    /// Per-host circuit breaker (process-local).
+    pub circuit: CircuitBreaker,
     /// Upstream HTTP client. Rebuilt on reload, so SIGHUP discards the
     /// existing connection pool. Reloads are deliberate and rare, so this
     /// trade-off is acceptable in exchange for picking up fresh SSRF,
@@ -72,13 +77,17 @@ impl LivePolicies {
             connect_timeout: config.limits.connect_timeout,
             max_redirects: config.limits.max_redirects,
             allow_https_to_http_downgrade: config.limits.allow_https_to_http_downgrade,
+            redirect_policy: config.limits.redirect_policy,
             user_agent: config.upstream.user_agent.clone(),
         };
-        let upstream = Upstream::new(client_config, ssrf);
+        let upstream = Upstream::new(client_config, ssrf)
+            .map_err(|err| anyhow::anyhow!("upstream client: {err}"))?;
 
         let origin_policy = OriginPolicy::from_config(&config.security);
         let rate_limiter = RateLimiter::from_config(&config.rate_limit)?;
         let guard = RequestGuard::new(origin_policy, rate_limiter);
+        let target_policy = TargetPolicy::from_config(&config.target);
+        let circuit = CircuitBreaker::from_config(&config.circuit_breaker);
 
         Ok(Self {
             config: Arc::new(config),
@@ -86,6 +95,8 @@ impl LivePolicies {
             request_filter: Arc::new(request_filter),
             response_filter: Arc::new(response_filter),
             guard,
+            target_policy,
+            circuit,
             upstream,
         })
     }

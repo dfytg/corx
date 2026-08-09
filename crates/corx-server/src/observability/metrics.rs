@@ -8,9 +8,9 @@
 use std::sync::OnceLock;
 
 pub use corx_core::observability::{
-    BUILD_INFO, BYTES_TRANSFERRED, CONFIG_RELOAD, DNS_LOOKUPS, INFLIGHT_REQUESTS, RATE_LIMITED,
-    REDIRECT_HOPS, REQUEST_DURATION, REQUESTS_TOTAL, SSRF_BLOCKS, UPSTREAM_DURATION,
-    UPSTREAM_ERRORS, WEBSOCKET_ACTIVE, WEBSOCKET_HANDSHAKES,
+    BUILD_INFO, BYTES_TRANSFERRED, CIRCUIT_OPENS, CIRCUIT_REJECTS, CONFIG_RELOAD, DNS_LOOKUPS,
+    INFLIGHT_REQUESTS, RATE_LIMITED, REDIRECT_HOPS, REQUEST_DURATION, REQUESTS_TOTAL, SSRF_BLOCKS,
+    UPSTREAM_DURATION, UPSTREAM_ERRORS,
 };
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
@@ -133,20 +133,20 @@ pub fn init_metrics() -> anyhow::Result<MetricsHandle> {
         Unit::Count,
         "Number of redirect hops followed per request, keyed by target host",
     );
-    describe_gauge!(
-        WEBSOCKET_ACTIVE,
-        Unit::Count,
-        "Currently active WebSocket connections",
-    );
-    describe_counter!(
-        WEBSOCKET_HANDSHAKES,
-        Unit::Count,
-        "WebSocket handshake outcomes, keyed by status",
-    );
     describe_counter!(
         CONFIG_RELOAD,
         Unit::Count,
         "Configuration reload attempts, keyed by result",
+    );
+    describe_counter!(
+        CIRCUIT_OPENS,
+        Unit::Count,
+        "Circuit breaker transitions to Open",
+    );
+    describe_counter!(
+        CIRCUIT_REJECTS,
+        Unit::Count,
+        "Requests rejected because a circuit is open",
     );
     describe_gauge!(
         BUILD_INFO,

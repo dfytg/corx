@@ -40,6 +40,8 @@ impl RequestGuard {
 
     /// Multi-dimensional rate limiting. Run *after* URL extraction so the
     /// `target_host` dimension can use the validated punycode hostname.
+    /// Pass `target_host = None` to skip the host dimension (preflight
+    /// paths that are not a parseable target).
     ///
     /// # Errors
     ///
@@ -48,7 +50,7 @@ impl RequestGuard {
         &self,
         request: &Request<B>,
         client_ip: IpAddr,
-        target_host: &str,
+        target_host: Option<&str>,
     ) -> Result<(), ProxyError> {
         let origin = request
             .headers()

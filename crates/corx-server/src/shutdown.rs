@@ -45,11 +45,47 @@ async fn run_plain(
     tracing::info!(address = %local_addr, http2 = cfg.http2, "corx listening");
 
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
-    axum::serve(listener, service)
-        .with_graceful_shutdown(shutdown_signal(ready))
-        .await?;
+    let grace = cfg.graceful_shutdown;
 
-    tracing::info!("shutdown complete");
+    // Signal path: flip ready → notify graceful shutdown → wait up to
+    // `grace`. If drain finishes first, serve returns Ok; if the deadline
+    // fires first, dropping the server aborts remaining connections.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let ready_for_signal = Arc::clone(&ready);
+
+    let server = axum::serve(listener, service).with_graceful_shutdown(async {
+        // Receiver is dropped when the signal path has already aborted; either
+        // outcome is fine — we only need to wait for the first send.
+        match shutdown_rx.await {
+            Ok(()) | Err(_) => {}
+        }
+    });
+
+    tokio::select! {
+        result = server => {
+            result?;
+            tracing::info!("shutdown complete");
+        }
+        () = async {
+            wait_os_signal().await;
+            ready_for_signal.store(false, Ordering::Release);
+            tracing::info!(
+                grace_secs = grace.as_secs_f64(),
+                "shutdown signal received, draining connections"
+            );
+            // Ignore send failure if the server already finished.
+            match shutdown_tx.send(()) {
+                Ok(()) | Err(()) => {}
+            }
+            tokio::time::sleep(grace).await;
+        } => {
+            tracing::warn!(
+                grace_secs = grace.as_secs_f64(),
+                "graceful shutdown deadline exceeded; aborting remaining connections"
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -85,6 +121,13 @@ async fn run_tls(
 /// `false`. Public so alternative listeners (e.g. the TLS path) can
 /// subscribe to the same signal source.
 pub async fn shutdown_signal(ready: Arc<AtomicBool>) {
+    wait_os_signal().await;
+    ready.store(false, Ordering::Release);
+    tracing::info!("shutdown signal received, draining connections");
+}
+
+/// Blocks until Ctrl+C or SIGTERM without mutating readiness.
+async fn wait_os_signal() {
     let ctrl_c = async {
         if let Err(err) = signal::ctrl_c().await {
             tracing::error!(error = %err, "failed to install Ctrl+C handler");
@@ -108,7 +151,4 @@ pub async fn shutdown_signal(ready: Arc<AtomicBool>) {
         () = ctrl_c => {}
         () = terminate => {}
     }
-
-    ready.store(false, Ordering::Release);
-    tracing::info!("shutdown signal received, draining connections");
 }

@@ -63,14 +63,17 @@ impl CorsPolicy {
         let mode = match cfg.policy {
             CorsPolicyKind::Wildcard => PolicyMode::Wildcard,
             CorsPolicyKind::Reflect => {
-                let set = if cfg.allowlist.is_empty() {
-                    None
+                if !cfg.origins.is_empty() {
+                    PolicyMode::Reflect(Some(to_origin_set(&cfg.origins)))
+                } else if cfg.allow_any_origin {
+                    // Empty origins + allow_any_origin: echo any Origin.
+                    PolicyMode::Reflect(None)
                 } else {
-                    Some(to_origin_set(&cfg.allowlist))
-                };
-                PolicyMode::Reflect(set)
+                    // Fail-closed: empty gate rejects every Origin.
+                    PolicyMode::Reflect(Some(to_origin_set(&[])))
+                }
             }
-            CorsPolicyKind::Explicit => PolicyMode::Explicit(to_origin_set(&cfg.explicit)),
+            CorsPolicyKind::Explicit => PolicyMode::Explicit(to_origin_set(&cfg.origins)),
         };
 
         Self {
@@ -86,7 +89,7 @@ impl CorsPolicy {
 
     /// Returns `true` when the policy is willing to emit credentials for
     /// cross-origin requests. Used by handlers to mirror state into other
-    /// response paths (e.g. WebSocket upgrade).
+    /// response paths.
     #[must_use]
     pub const fn allow_credentials(&self) -> bool {
         self.allow_credentials
@@ -295,11 +298,11 @@ mod tests {
     use super::{CorsPolicy, apply_to_response, build_preflight_response, is_preflight};
     use crate::config::{CorsConfig, CorsPolicyKind};
 
-    fn policy(kind: CorsPolicyKind, allowlist: Vec<String>, explicit: Vec<String>) -> CorsPolicy {
+    fn policy(kind: CorsPolicyKind, origins: Vec<String>, allow_any_origin: bool) -> CorsPolicy {
         CorsPolicy::from_config(&CorsConfig {
             policy: kind,
-            allowlist,
-            explicit,
+            origins,
+            allow_any_origin,
             allowed_methods: vec!["GET".into(), "POST".into(), "OPTIONS".into()],
             allowed_headers: vec!["content-type".into()],
             exposed_headers: vec!["x-corx-status".into()],
@@ -326,7 +329,7 @@ mod tests {
 
     #[test]
     fn wildcard_returns_star() {
-        let pol = policy(CorsPolicyKind::Wildcard, vec![], vec![]);
+        let pol = policy(CorsPolicyKind::Wildcard, vec![], false);
         let req = request(Method::GET, Some("https://app.test"), None);
         let mut resp = http::Response::new(());
         apply_to_response(&mut resp, req.headers(), &pol);
@@ -337,8 +340,8 @@ mod tests {
     }
 
     #[test]
-    fn reflect_without_allowlist_echoes_origin() {
-        let pol = policy(CorsPolicyKind::Reflect, vec![], vec![]);
+    fn reflect_with_allow_any_origin_echoes() {
+        let pol = policy(CorsPolicyKind::Reflect, vec![], true);
         let req = request(Method::GET, Some("https://app.test"), None);
         let mut resp = http::Response::new(());
         apply_to_response(&mut resp, req.headers(), &pol);
@@ -350,11 +353,20 @@ mod tests {
     }
 
     #[test]
-    fn reflect_with_allowlist_gates_origins() {
+    fn reflect_fail_closed_without_origins_or_flag() {
+        let pol = policy(CorsPolicyKind::Reflect, vec![], false);
+        let req = request(Method::GET, Some("https://app.test"), None);
+        let mut resp = http::Response::new(());
+        apply_to_response(&mut resp, req.headers(), &pol);
+        assert!(resp.headers().get("access-control-allow-origin").is_none());
+    }
+
+    #[test]
+    fn reflect_with_origins_gates() {
         let pol = policy(
             CorsPolicyKind::Reflect,
             vec!["https://good.test".into()],
-            vec![],
+            false,
         );
         let req = request(Method::GET, Some("https://bad.test"), None);
         let mut resp = http::Response::new(());
@@ -366,8 +378,8 @@ mod tests {
     fn explicit_only_matches_configured() {
         let pol = policy(
             CorsPolicyKind::Explicit,
-            vec![],
             vec!["https://ok.test".into()],
+            false,
         );
         let req_ok = request(Method::GET, Some("https://ok.test"), None);
         let mut resp_ok = http::Response::new(());
@@ -393,7 +405,7 @@ mod tests {
 
     #[test]
     fn preflight_uses_configured_allowed_methods() {
-        let pol = policy(CorsPolicyKind::Wildcard, vec![], vec![]);
+        let pol = policy(CorsPolicyKind::Wildcard, vec![], false);
         let req = request(Method::OPTIONS, Some("https://a.test"), Some("POST"));
         assert!(is_preflight(&req));
         let resp = build_preflight_response(&req, &pol);
@@ -421,7 +433,7 @@ mod tests {
 
     #[test]
     fn exposed_headers_are_emitted_on_real_response() {
-        let pol = policy(CorsPolicyKind::Reflect, vec![], vec![]);
+        let pol = policy(CorsPolicyKind::Reflect, vec![], true);
         let req = request(Method::GET, Some("https://app.test"), None);
         let mut resp = http::Response::new(());
         apply_to_response(&mut resp, req.headers(), &pol);
@@ -435,8 +447,8 @@ mod tests {
     fn pna_handshake_replies_when_enabled() {
         let mut cfg = CorsConfig {
             policy: CorsPolicyKind::Wildcard,
-            allowlist: vec![],
-            explicit: vec![],
+            origins: vec![],
+            allow_any_origin: false,
             allowed_methods: vec!["GET".into()],
             allowed_headers: vec!["content-type".into()],
             exposed_headers: vec![],
@@ -477,8 +489,8 @@ mod tests {
     fn wildcard_with_credentials_falls_back_to_origin_echo() {
         let mut cfg = CorsConfig {
             policy: CorsPolicyKind::Wildcard,
-            allowlist: vec![],
-            explicit: vec![],
+            origins: vec![],
+            allow_any_origin: false,
             allowed_methods: vec![],
             allowed_headers: vec![],
             exposed_headers: vec![],

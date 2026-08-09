@@ -11,7 +11,9 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::handlers;
-use crate::middleware::{access_log_layer, cors_layer, load_shed_layer};
+use crate::middleware::{
+    access_log_layer, auth_layer, cors_layer, header_limit_layer, load_shed_layer,
+};
 use crate::state::ServerBuild;
 
 /// Shared application state injected into every handler.
@@ -64,11 +66,18 @@ pub fn build_router(state: AppState) -> Router<()> {
         .method_not_allowed_fallback(handlers::not_found)
         // CORS runs first (innermost), so even responses from later layers
         // gain the headers; load-shed sits just outside it so 503s also
-        // leave with valid CORS metadata.
+        // leave with valid CORS metadata. Bearer auth is outside the
+        // handler but inside load-shed so rejected auths still count as
+        // load for abuse control.
         .layer(middleware::from_fn_with_state(state.clone(), cors_layer))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_layer))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             load_shed_layer,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            header_limit_layer,
         ))
         .with_state(state)
         .layer(DefaultBodyLimit::max(body_limit))

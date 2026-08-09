@@ -117,6 +117,7 @@ mod tests {
             remove_response_headers: vec![],
             origin_blacklist: vec!["https://bad.test".into()],
             origin_whitelist: vec![],
+            ..SecurityConfig::default()
         });
         assert!(
             policy
@@ -134,6 +135,7 @@ mod tests {
             remove_response_headers: vec![],
             origin_blacklist: vec![],
             origin_whitelist: vec!["https://ok.test".into()],
+            ..SecurityConfig::default()
         });
         assert!(
             policy
@@ -157,6 +159,7 @@ mod tests {
             remove_response_headers: vec![],
             origin_blacklist: vec![],
             origin_whitelist: vec![],
+            ..SecurityConfig::default()
         });
         assert!(policy.evaluate(&Method::CONNECT, &headers(None)).is_err());
     }
@@ -170,6 +173,7 @@ mod tests {
             remove_response_headers: vec![],
             origin_blacklist: vec![],
             origin_whitelist: vec![],
+            ..SecurityConfig::default()
         });
         assert!(policy.evaluate(&Method::GET, &headers(None)).is_err());
         assert!(

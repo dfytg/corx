@@ -19,11 +19,12 @@ request_timeout               = "60s"
 connect_timeout               = "10s"
 max_redirects                 = 5
 allow_https_to_http_downgrade = false       # reject https → http redirects by default
+redirect_policy               = "follow"    # follow | block | rewrite
 
 [cors]
 policy            = "reflect"               # wildcard | reflect | explicit
-allowlist         = []                       # reflect-mode gate, empty = allow-any
-explicit          = []                       # explicit-mode whitelist
+origins           = []                       # gate for reflect / list for explicit
+allow_any_origin  = true                     # demo: echo any Origin; production: false + origins
 allowed_methods   = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
 allowed_headers   = [
     "accept",
@@ -51,6 +52,30 @@ remove_request_headers  = ["cookie", "cookie2"]
 remove_response_headers = ["set-cookie", "set-cookie2"]
 origin_blacklist        = []
 origin_whitelist        = []
+
+[security.preflight]
+mode       = "enforce"   # enforce | open (open = cors-anywhere: preflight before guards)
+rate_limit = true        # charge multi-dimensional rate limiter on OPTIONS
+
+[security.auth]
+mode          = "none"   # none | bearer
+bearer_tokens = []       # required when mode = bearer
+
+# require_client_binding = false  # true → must set origin_whitelist, bearer, or mTLS
+
+[target]
+mode       = "any_public"   # any_public | allowlist | denylist
+hosts      = []             # exact or suffix (".example.com")
+schemes    = ["https", "http"]
+https_only = false
+
+[circuit_breaker]
+enabled            = true
+failure_threshold  = 5
+window             = "30s"
+open_duration      = "30s"
+half_open_max      = 1
+count_5xx          = true
 
 [ssrf]
 # mode = { kind = "strict" }                              # production default (fail-closed)
@@ -85,7 +110,7 @@ inflight_max        = 1000                        # 0 disables the load-shed lay
 [upstream]
 pool_max_idle_per_host = 32
 pool_idle_timeout = "90s"
-user_agent = "corx/0.1.0"
+user_agent = "corx/1.0.0"
 
 [observability]
 log_format = "json"                # json | pretty

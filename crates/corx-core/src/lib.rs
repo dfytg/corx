@@ -6,10 +6,10 @@
 //! framework, so it can be embedded in `axum`, `actix-web`, `poem`, raw
 //! `hyper` services or any custom stack.
 //!
-//! The companion crate [`corx-server`](https://docs.rs/corx-server) provides
-//! the production-grade `axum` + `tower` bindings, middleware (rate limiting,
-//! origin guard, access log, OpenTelemetry…), TLS termination and graceful
-//! lifecycle management.
+//! Prefer the umbrella crate [`corx`](https://docs.rs/corx) for embedding.
+//! For a narrower dependency graph, [`corx-server`](https://docs.rs/corx-server)
+//! provides the production `axum` + `tower` binding (middleware, TLS,
+//! lifecycle). The `corx` CLI is published as package `corx-cli`.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -23,5 +23,6 @@ use criterion as _;
 pub mod config;
 pub mod error;
 pub mod observability;
+pub mod policy;
 pub mod proxy;
 pub mod util;

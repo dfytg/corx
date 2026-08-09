@@ -23,8 +23,9 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::connect::dns::Name;
 use hyper_util::rt::TokioExecutor;
 use rustls_platform_verifier::ConfigVerifierExt as _;
-use tower::Service;
+use tower_service::Service;
 
+use crate::config::RedirectPolicy;
 use crate::error::ProxyError;
 use crate::observability;
 use crate::proxy::redirect::{self, NextHop};
@@ -55,10 +56,12 @@ pub struct ClientConfig {
     pub pool_idle_timeout: Duration,
     /// TCP connect timeout.
     pub connect_timeout: Duration,
-    /// Maximum number of redirects to follow.
+    /// Maximum number of redirects to follow when policy is `Follow`.
     pub max_redirects: u8,
     /// Allow `https \u2192 http` redirect downgrades. Default: `false`.
     pub allow_https_to_http_downgrade: bool,
+    /// How 3xx responses are handled.
+    pub redirect_policy: RedirectPolicy,
     /// Default User-Agent.
     pub user_agent: String,
 }
@@ -84,10 +87,13 @@ impl Upstream {
     ///
     /// The supplied [`SsrfGuard`] is consulted inside the DNS resolver used
     /// by this client: no upstream connection is made to an address that
-    /// violates SSRF policy. The platform TLS verifier is loaded lazily by
-    /// `rustls-platform-verifier`; construction itself is infallible.
-    #[must_use]
-    pub fn new(config: ClientConfig, guard: SsrfGuard) -> Self {
+    /// violates SSRF policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the platform TLS root store cannot be loaded
+    /// (`rustls-platform-verifier`).
+    pub fn new(config: ClientConfig, guard: SsrfGuard) -> Result<Self, ProxyError> {
         let guard = Arc::new(guard);
 
         let mut http = HttpConnector::new_with_resolver(GuardedResolver {
@@ -98,7 +104,8 @@ impl Upstream {
         http.set_nodelay(true);
         http.set_keepalive(Some(Duration::from_secs(30)));
 
-        let tls_config = rustls::ClientConfig::with_platform_verifier();
+        let tls_config = rustls::ClientConfig::with_platform_verifier()
+            .map_err(|err| ProxyError::Tls(Box::new(err)))?;
         let https = HttpsConnectorBuilder::new()
             .with_tls_config(tls_config)
             .https_or_http()
@@ -111,11 +118,11 @@ impl Upstream {
             .pool_idle_timeout(config.pool_idle_timeout)
             .build::<_, UpstreamBody>(https);
 
-        Self {
+        Ok(Self {
             client,
             guard,
             config: Arc::new(config),
-        }
+        })
     }
 
     /// Executes a request against the upstream, following redirects up to
@@ -154,6 +161,26 @@ impl Upstream {
                 .record(f64::from(hops));
                 return Ok(response);
             }
+
+            match self.config.redirect_policy {
+                RedirectPolicy::Block => {
+                    return Err(ProxyError::RedirectBlocked(
+                        "redirect policy is block".to_owned(),
+                    ));
+                }
+                RedirectPolicy::Rewrite => {
+                    // Return the 3xx as-is; the server layer rewrites Location
+                    // to the proxy path-prefix form when desired.
+                    metrics::histogram!(
+                        observability::REDIRECT_HOPS,
+                        "target_host" => target_host.clone(),
+                    )
+                    .record(f64::from(hops));
+                    return Ok(response);
+                }
+                RedirectPolicy::Follow => {}
+            }
+
             if hops >= max_redirects {
                 return Err(ProxyError::TooManyRedirects(max_redirects));
             }

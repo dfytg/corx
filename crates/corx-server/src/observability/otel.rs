@@ -1,13 +1,9 @@
 //! OpenTelemetry / OTLP trace export.
 //!
 //! Compiled only when the `otel` Cargo feature is on. Provides
-//! [`build_layer`] which yields a `tracing_subscriber::Layer` that can be
-//! plugged into the [`crate::observability::init_tracing`] pipeline.
-//!
-//! Spans naturally form a tree because every async function instrumented
-//! with `#[tracing::instrument]` spawns a child span; the OpenTelemetry
-//! layer propagates the resulting trace context onto the configured OTLP
-//! endpoint.
+//! [`build_tracer`] which yields an SDK tracer that can be plugged into the
+//! [`crate::observability::init_tracing`] pipeline via
+//! `tracing-opentelemetry`.
 
 use anyhow::Context as _;
 use corx_core::config::{OtelConfig, OtelProtocol};
@@ -17,16 +13,13 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::runtime::Tokio;
-use opentelemetry_sdk::trace::{Sampler, Tracer, TracerProvider};
+use opentelemetry_sdk::trace::{Sampler, SdkTracer, SdkTracerProvider};
 
 /// Build the SDK tracer that backs `tracing-opentelemetry`'s layer.
 ///
 /// Returning the bare tracer (instead of a fully wrapped subscriber layer)
 /// keeps the layer's `S` type parameter free for the caller's registry to
-/// infer at the `with(...)` site \u2014 trait-object dispatch over `Layer<S>`
-/// would otherwise force `S` to be specified at this boundary, which is
-/// not possible without naming the concrete `Layered<...>` chain.
+/// infer at the `with(...)` site.
 ///
 /// Returns `Ok(None)` when `cfg.enabled = false` so the caller can plug an
 /// `Option<L>` straight into `Subscriber::with`.
@@ -35,7 +28,7 @@ use opentelemetry_sdk::trace::{Sampler, Tracer, TracerProvider};
 ///
 /// Returns an error when the OTLP exporter cannot be constructed (typically
 /// invalid endpoint or unreachable collector at startup).
-pub fn build_tracer(cfg: &OtelConfig) -> anyhow::Result<Option<Tracer>> {
+pub fn build_tracer(cfg: &OtelConfig) -> anyhow::Result<Option<SdkTracer>> {
     if !cfg.enabled {
         return Ok(None);
     }
@@ -57,8 +50,8 @@ pub fn build_tracer(cfg: &OtelConfig) -> anyhow::Result<Option<Tracer>> {
             .context("building OTLP HTTP span exporter")?,
     };
 
-    let provider = TracerProvider::builder()
-        .with_batch_exporter(exporter, Tokio)
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
         .with_resource(build_resource(cfg))
         .with_sampler(Sampler::TraceIdRatioBased(cfg.sample_ratio.clamp(0.0, 1.0)))
         .build();
@@ -85,5 +78,5 @@ fn build_resource(cfg: &OtelConfig) -> Resource {
             kvs.push(KeyValue::new(k.trim().to_owned(), v.trim().to_owned()));
         }
     }
-    Resource::new(kvs)
+    Resource::builder_empty().with_attributes(kvs).build()
 }

@@ -5,24 +5,30 @@
 ```text
 crates/
 ├── corx-core/        # framework-agnostic engine
-│   ├── config/       # typed TOML + figment loader + validator
+│   ├── config/       # typed config + validator (no IO)
+│   ├── policy/       # TargetPolicy, CircuitBreaker
 │   ├── proxy/        # CORS, SSRF, redirect, URL parser, upstream
-│   ├── observability # metric / log / OTLP namespaces
+│   ├── observability # metric name constants
 │   └── error.rs      # ProxyError + ErrorKind taxonomy
 ├── corx-server/      # axum / tower glue
 │   ├── handlers      # axum endpoints + proxy fallback
-│   ├── middleware    # CORS, load shed, request guard, access log
+│   ├── middleware    # CORS, load shed, auth, access log
 │   ├── observability # MetricsHandle, OTel layer, CountingBody
 │   ├── hot_reload    # SIGHUP + ArcSwap policy snapshot
 │   ├── shutdown      # graceful drain + ready flag
 │   └── tls (feat)    # axum-server + rustls
-└── corx/             # binary: clap subcommands + main.rs
+├── corx/             # umbrella library (recommended embed API)
+└── corx-cli/         # binary package; [[bin]] name = "corx"
 ```
 
-`corx-core` has zero `axum` / `tower` dependencies, so it can be reused
-under any HTTP framework. `corx-server` is the production binding; the
-`corx` binary is a thin shell that owns CLI parsing, logging bootstrap,
-and signal wiring.
+**Dependency direction:** `corx-cli` → `corx` → (`corx-server` → `corx-core`).
+
+`corx-core` has zero `axum` dependencies and only the minimal
+`tower-service` trait (for hyper's custom DNS resolver). Policy engines
+live in core so they can be unit-tested without a server. `corx-server`
+is the production axum/tower binding. `corx` re-exports both for
+embedders. `corx-cli` is a thin shell that owns CLI parsing, logging
+bootstrap, and signal wiring; the installed binary remains named `corx`.
 
 ## Request lifecycle
 
@@ -33,11 +39,14 @@ client request
   → access_log_layer      (outermost; sees final status)
   → TimeoutLayer
   → DefaultBodyLimit
+  → header_limit_layer    (max_request_header_bytes → 431)
   → load_shed_layer       (global inflight ceiling)
   → cors_layer            (stamps headers on every response)
   → proxy fallback handler:
       ├── policies = ServerBuild.policies.load()  // ArcSwap snapshot
-      ├── if preflight → build_preflight_response → return
+      ├── if preflight:
+      │     ├── (default) origin guard + optional rate limit
+      │     └── build_preflight_response → return
       ├── policies.guard.check_origin
       ├── extract_target  // URL parser + IDN punycode + scheme normaliser
       ├── policies.guard.check_rate

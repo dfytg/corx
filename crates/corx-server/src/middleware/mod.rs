@@ -5,14 +5,18 @@
 //! the proxy handler owns all business logic.
 
 pub mod access_log;
+pub mod auth;
 pub mod cors;
+pub mod header_limit;
 pub mod load_shed;
 pub mod origin_guard;
 pub mod rate_limit;
 pub mod request_guard;
 
 pub use self::access_log::access_log_layer;
+pub use self::auth::auth_layer;
 pub use self::cors::cors_layer;
+pub use self::header_limit::header_limit_layer;
 pub use self::load_shed::load_shed_layer;
 pub use self::origin_guard::OriginPolicy;
 pub use self::rate_limit::RateLimiter;

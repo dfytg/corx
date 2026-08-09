@@ -45,8 +45,7 @@ layout shared across every duration metric.
 | `corx_ssrf_blocks_total`              | counter   | `cidr`                          |
 | `corx_dns_lookups_total`              | counter   | `result = literal \| ok \| error` |
 | `corx_redirect_hops`                  | histogram | `target_host`                   |
-| `corx_websocket_active`               | gauge     |                                 |
-| `corx_websocket_handshakes_total`     | counter   | `status`                        |
+
 | `corx_config_reload_total`            | counter   | `result = ok \| rejected \| error` |
 | `corx_build_info`                     | gauge     | `version`, `rust_version`, `features` (always reports `1`) |
 

@@ -32,7 +32,7 @@ connections, pure-Rust TLS and DNS, and built-in SSRF protection.
 ## Quick start
 
 ```sh
-cargo run --release --bin corx -- serve --config corx.example.toml
+cargo run --release -p corx-cli -- serve --config corx.example.toml
 ```
 
 Proxy a request:

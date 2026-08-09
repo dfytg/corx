@@ -92,6 +92,9 @@ impl Config {
         validate_upstream(self, &mut report);
         validate_tls(self, &mut report);
         validate_ssrf(self, &mut report);
+        validate_target(self, &mut report);
+        validate_auth(self, &mut report);
+        validate_circuit(self, &mut report);
         report
     }
 }
@@ -105,11 +108,22 @@ fn validate_cors(cfg: &Config, report: &mut ValidationReport) {
         ));
     }
 
-    if matches!(cfg.cors.policy, CorsPolicyKind::Explicit) && cfg.cors.explicit.is_empty() {
+    if matches!(cfg.cors.policy, CorsPolicyKind::Explicit) && cfg.cors.origins.is_empty() {
         report.errors.push(ConfigError::new(
-            "cors.explicit",
+            "cors.origins",
             "policy is `explicit` but no origins are listed; the proxy would reject \
              every cross-origin request",
+        ));
+    }
+
+    if matches!(cfg.cors.policy, CorsPolicyKind::Reflect)
+        && cfg.cors.allow_any_origin
+        && cfg.cors.allow_credentials
+    {
+        report.errors.push(ConfigError::new(
+            "cors.allow_any_origin",
+            "reflect + allow_any_origin + allow_credentials is unsafe; \
+             list explicit origins instead",
         ));
     }
 
@@ -118,6 +132,60 @@ fn validate_cors(cfg: &Config, report: &mut ValidationReport) {
             "cors.allow_private_network",
             "Private Network Access should usually be paired with `policy = \"explicit\"` \
              so that only known origins can reach the private network",
+        ));
+    }
+}
+
+fn validate_target(cfg: &Config, report: &mut ValidationReport) {
+    use crate::config::TargetMode;
+
+    if matches!(cfg.target.mode, TargetMode::Allowlist) && cfg.target.hosts.is_empty() {
+        report.errors.push(ConfigError::new(
+            "target.hosts",
+            "mode is `allowlist` but hosts is empty; every target would be rejected",
+        ));
+    }
+}
+
+fn validate_auth(cfg: &Config, report: &mut ValidationReport) {
+    use crate::config::AuthMode;
+
+    if matches!(cfg.security.auth.mode, AuthMode::Bearer)
+        && cfg.security.auth.bearer_tokens.is_empty()
+    {
+        report.errors.push(ConfigError::new(
+            "security.auth.bearer_tokens",
+            "auth.mode is `bearer` but no tokens are configured",
+        ));
+    }
+
+    if cfg.security.require_client_binding {
+        let has_origin_bind = !cfg.security.origin_whitelist.is_empty();
+        let has_bearer = matches!(cfg.security.auth.mode, AuthMode::Bearer)
+            && !cfg.security.auth.bearer_tokens.is_empty();
+        let has_mtls = cfg
+            .server
+            .tls
+            .as_ref()
+            .is_some_and(|t| t.client_ca_path.is_some());
+        if !(has_origin_bind || has_bearer || has_mtls) {
+            report.errors.push(ConfigError::new(
+                "security.require_client_binding",
+                "require_client_binding is true but none of origin_whitelist, \
+                 bearer auth, or mTLS client CA is configured",
+            ));
+        }
+    }
+}
+
+fn validate_circuit(cfg: &Config, report: &mut ValidationReport) {
+    if !cfg.circuit_breaker.enabled {
+        return;
+    }
+    if cfg.circuit_breaker.failure_threshold == 0 {
+        report.errors.push(ConfigError::new(
+            "circuit_breaker.failure_threshold",
+            "must be > 0 when the breaker is enabled",
         ));
     }
 }
@@ -283,9 +351,9 @@ mod tests {
     fn explicit_without_origins_is_rejected() {
         let mut cfg = base();
         cfg.cors.policy = CorsPolicyKind::Explicit;
-        cfg.cors.explicit = Vec::new();
+        cfg.cors.origins = Vec::new();
         let err = cfg.validate().unwrap_err();
-        assert_eq!(err.path, "cors.explicit");
+        assert_eq!(err.path, "cors.origins");
     }
 
     #[test]

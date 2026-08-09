@@ -20,9 +20,9 @@ case to function.
 +---------+   4. Load shed (global inflight cap)
      │
      ▼
-+---------+   5. CORS preflight short-circuit
-| guards  |   6. Origin allow/deny + required headers
-+---------+   7. Multi-dimensional rate limit
++---------+   5. Origin allow/deny + required headers
+| guards  |   6. Multi-dimensional rate limit
++---------+   7. CORS preflight short-circuit (after guards by default)
      │
      ▼
 +---------+   8. URL parser (RFC 3986 + scheme normaliser)
@@ -34,6 +34,37 @@ case to function.
 | upstream|
 +---------+
 ```
+
+## Preflight gating
+
+By default (`security.preflight.mode = "enforce"`) `OPTIONS` preflights run
+the same origin / method / required-header guards as normal requests, and
+optionally charge the rate limiter (`security.preflight.rate_limit = true`).
+Blacklisted origins therefore cannot harvest `204` responses.
+
+Set `security.preflight.mode = "open"` only when you intentionally want
+classic cors-anywhere behaviour (preflight before guards).
+
+## Target admission
+
+`[target]` filters hosts and schemes **before** DNS/SSRF:
+
+- `any_public` (default) — any host; SSRF still applies to resolved IPs
+- `allowlist` / `denylist` — exact hosts or DNS suffixes (`.example.com`)
+- `https_only` — reject non-HTTPS targets
+
+## Authentication
+
+`[security.auth]` with `mode = "bearer"` requires
+`Authorization: Bearer <token>` on non-OPTIONS proxy traffic (ops routes and
+preflights are exempt). Use `security.require_client_binding = true` to refuse
+startup without origin whitelist, bearer tokens, or mTLS.
+
+## Circuit breaker
+
+`[circuit_breaker]` tracks consecutive upstream failures per target host in
+process memory and returns `503` / `circuit_open` while open. Not shared
+across replicas.
 
 ## SSRF guard
 

@@ -25,11 +25,11 @@ pub const SSRF_BLOCKS: &str = "corx_ssrf_blocks_total";
 pub const DNS_LOOKUPS: &str = "corx_dns_lookups_total";
 /// Histogram: number of redirect hops per request, keyed by `target_host`.
 pub const REDIRECT_HOPS: &str = "corx_redirect_hops";
-/// Gauge: number of active WebSocket connections.
-pub const WEBSOCKET_ACTIVE: &str = "corx_websocket_connections_active";
-/// Counter: WebSocket handshake outcomes, keyed by `status`.
-pub const WEBSOCKET_HANDSHAKES: &str = "corx_websocket_handshakes_total";
 /// Counter: configuration reload outcomes, keyed by `result`.
 pub const CONFIG_RELOAD: &str = "corx_config_reload_total";
+/// Counter: circuit breaker transitions to Open.
+pub const CIRCUIT_OPENS: &str = "corx_circuit_opens_total";
+/// Counter: requests rejected because a circuit is open.
+pub const CIRCUIT_REJECTS: &str = "corx_circuit_rejects_total";
 /// Gauge: build information watermark; always reported as 1.
 pub const BUILD_INFO: &str = "corx_build_info";

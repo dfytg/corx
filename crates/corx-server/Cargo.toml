@@ -56,6 +56,7 @@ regex = { workspace = true }
 ipnet = { workspace = true }
 
 arc-swap = { workspace = true }
+dashmap = { workspace = true }
 foldhash = { workspace = true }
 
 tracing = { workspace = true }

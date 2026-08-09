@@ -1,10 +1,15 @@
 //! Target host / scheme admission.
 
+use http::Uri;
+
 use crate::config::{TargetConfig, TargetMode};
 use crate::error::ProxyError;
 use crate::proxy::url_parser::TargetUrl;
 
 /// Compiled target admission policy.
+///
+/// Applied on the **initial** proxy target and on **every** redirect hop so
+/// allowlists / denylists / `https_only` cannot be bypassed via 3xx.
 #[derive(Debug, Clone)]
 pub struct TargetPolicy {
     mode: TargetMode,
@@ -45,7 +50,21 @@ impl TargetPolicy {
     /// Returns [`ProxyError::TargetNotAllowed`] when the host or scheme is
     /// outside policy.
     pub fn check(&self, target: &TargetUrl) -> Result<(), ProxyError> {
-        let scheme = target.url.scheme().to_ascii_lowercase();
+        self.check_authority(target.url.scheme(), &target.host)
+    }
+
+    /// Admit or reject a hop identified by scheme and host (redirects).
+    ///
+    /// Host comparison is case-insensitive. The host must already be in
+    /// ASCII / punycode form when it comes from the URL parser; redirect
+    /// `Location` hosts are lowercased here for matching.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProxyError::TargetNotAllowed`] when the host or scheme is
+    /// outside policy.
+    pub fn check_authority(&self, scheme: &str, host: &str) -> Result<(), ProxyError> {
+        let scheme = scheme.to_ascii_lowercase();
         if self.https_only && scheme != "https" {
             return Err(ProxyError::TargetNotAllowed(format!(
                 "scheme `{scheme}` rejected (https_only)"
@@ -57,7 +76,7 @@ impl TargetPolicy {
             )));
         }
 
-        let host = target.host.to_ascii_lowercase();
+        let host = host.to_ascii_lowercase();
         let matched = self
             .hosts
             .iter()
@@ -89,6 +108,22 @@ impl TargetPolicy {
                 }
             }
         }
+    }
+
+    /// Admit or reject a hop [`Uri`] (used on every redirect continue).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProxyError::TargetNotAllowed`] or [`ProxyError::InvalidUrl`]
+    /// when the URI lacks a usable scheme/host or fails policy.
+    pub fn check_uri(&self, uri: &Uri) -> Result<(), ProxyError> {
+        let scheme = uri
+            .scheme_str()
+            .ok_or_else(|| ProxyError::InvalidUrl("hop URI lacks a scheme".to_owned()))?;
+        let host = uri
+            .host()
+            .ok_or_else(|| ProxyError::InvalidUrl("hop URI lacks a host".to_owned()))?;
+        self.check_authority(scheme, host)
     }
 }
 
@@ -152,5 +187,18 @@ mod tests {
         });
         assert!(pol.check(&target("https://bad.test/x")).is_err());
         assert!(pol.check(&target("https://good.test/x")).is_ok());
+    }
+
+    #[test]
+    fn check_uri_enforces_allowlist_on_redirect_hop() {
+        let pol = TargetPolicy::from_config(&TargetConfig {
+            mode: TargetMode::Allowlist,
+            hosts: vec!["allowed.test".into()],
+            ..TargetConfig::default()
+        });
+        let ok: Uri = "https://allowed.test/next".parse().unwrap();
+        let bad: Uri = "https://evil.test/next".parse().unwrap();
+        assert!(pol.check_uri(&ok).is_ok());
+        assert!(pol.check_uri(&bad).is_err());
     }
 }

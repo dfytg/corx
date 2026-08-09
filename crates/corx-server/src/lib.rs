@@ -15,14 +15,10 @@
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
-// Several workspace dependencies are wired in via Cargo.toml ahead of the
-// modules that consume them (M2 forwarded headers, M3 access log + load shed,
-// M4 OpenTelemetry, M5 config hot reload). The lint will trip until those
-// modules land; revisit and remove the allow once the remaining milestones
-// are implemented.
 #![allow(
     unused_crate_dependencies,
-    reason = "transitive deps wired ahead of M2-M5 modules"
+    reason = "Workspace deps shared across optional features (tls/otel) \
+              and integration tests; lib target alone would false-positive."
 )]
 
 pub mod config_loader;

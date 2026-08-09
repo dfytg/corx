@@ -210,6 +210,7 @@ fn validate_limits(cfg: &Config, report: &mut ValidationReport) {
             "must be > 0",
         ));
     }
+    // 0 means "unlimited" for response body — intentional opt-out.
 }
 
 fn validate_rate_limit(cfg: &RateLimitConfig, report: &mut ValidationReport) {
@@ -217,17 +218,21 @@ fn validate_rate_limit(cfg: &RateLimitConfig, report: &mut ValidationReport) {
         return;
     }
 
-    let any_enabled = cfg.origin.rps > 0
-        || cfg.ip.rps > 0
-        || cfg.target_host.rps > 0
-        || cfg.global.rps > 0
-        || cfg.global.inflight_max > 0;
+    if cfg.max_keys == 0 {
+        report.errors.push(ConfigError::new(
+            "rate_limit.max_keys",
+            "must be > 0 when rate limiting is enabled",
+        ));
+    }
+
+    let any_enabled =
+        cfg.origin.rps > 0 || cfg.ip.rps > 0 || cfg.target_host.rps > 0 || cfg.global.rps > 0;
     if !any_enabled {
         report.errors.push(ConfigError::new(
             "rate_limit",
-            "rate_limit.enabled = true but every dimension is at 0; either \
+            "rate_limit.enabled = true but every GCRA dimension is at 0; either \
              disable rate-limiting or set at least one of origin.rps / ip.rps / \
-             target_host.rps / global.rps / global.inflight_max",
+             target_host.rps / global.rps (inflight is limits.inflight_max)",
         ));
     }
 
@@ -364,7 +369,6 @@ mod tests {
         cfg.rate_limit.ip.rps = 0;
         cfg.rate_limit.target_host.rps = 0;
         cfg.rate_limit.global.rps = 0;
-        cfg.rate_limit.global.inflight_max = 0;
         let err = cfg.validate().unwrap_err();
         assert_eq!(err.path, "rate_limit");
     }

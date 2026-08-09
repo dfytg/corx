@@ -47,7 +47,7 @@ pub use corx_core::config::{
     TargetConfig, TargetMode, TlsConfig, UpstreamConfig, ValidationReport,
 };
 pub use corx_core::error::{ErrorKind, ErrorPayload, ProxyError, STATUS_HEADER};
-pub use corx_core::policy::{CircuitBreaker, CircuitDecision, TargetPolicy};
+pub use corx_core::policy::{CircuitBreaker, CircuitHop, TargetPolicy};
 pub use corx_core::proxy::{
     ClientConfig, CorsPolicy, HeaderFilter, SsrfGuard, TargetUrl, Upstream, UpstreamBody,
     apply_to_response, build_preflight_response, extract_target, is_preflight,

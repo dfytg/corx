@@ -3,17 +3,27 @@
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
-/// Rate-limit configuration covering four orthogonal dimensions.
+use super::default_true;
+
+/// Rate-limit configuration covering four orthogonal GCRA dimensions.
 ///
 /// Each sub-limiter is independent: setting any of `origin.rps`, `ip.rps`,
 /// `target_host.rps` or `global.rps` to `0` disables that dimension while
 /// leaving the others active. Setting [`RateLimitConfig::enabled`] to
-/// `false` disables every dimension at once.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// `false` disables every GCRA dimension at once.
+///
+/// Process-wide **inflight** concurrency is configured under
+/// [`crate::config::LimitsConfig::inflight_max`], not here.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
-    /// Master switch. When `false`, every dimension below is bypassed.
+    /// Master switch for GCRA dimensions. Default: enabled.
+    #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Soft cap on distinct keys per keyed dimension (origin / ip / host).
+    /// New keys are rejected with 429 when the map is full.
+    #[serde(default = "default_max_keys")]
+    pub max_keys: usize,
     /// Per-`Origin`-header limiting.
     #[serde(default)]
     pub origin: OriginLimitConfig,
@@ -24,15 +34,20 @@ pub struct RateLimitConfig {
     /// caller targeting a popular destination).
     #[serde(default)]
     pub target_host: HostLimitConfig,
-    /// Process-wide concurrency limiter that drives the load-shed layer.
+    /// Process-wide GCRA token bucket.
     #[serde(default)]
     pub global: GlobalLimitConfig,
+}
+
+const fn default_max_keys() -> usize {
+    16_384
 }
 
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
+            max_keys: default_max_keys(),
             origin: OriginLimitConfig {
                 rps: 50,
                 burst: 100,
@@ -50,14 +65,13 @@ impl Default for RateLimitConfig {
             global: GlobalLimitConfig {
                 rps: 5_000,
                 burst: 10_000,
-                inflight_max: 1_000,
             },
         }
     }
 }
 
 /// Per-`Origin` rate-limit configuration.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OriginLimitConfig {
     /// Steady-state requests-per-second; `0` disables this dimension.
@@ -73,7 +87,7 @@ pub struct OriginLimitConfig {
 }
 
 /// Per-client-IP rate-limit configuration.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct IpLimitConfig {
     /// Steady-state requests-per-second; `0` disables this dimension.
@@ -89,7 +103,7 @@ pub struct IpLimitConfig {
 }
 
 /// Per-target-host rate-limit configuration.
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HostLimitConfig {
     /// Steady-state requests-per-second; `0` disables this dimension.
@@ -100,8 +114,8 @@ pub struct HostLimitConfig {
     pub burst: u32,
 }
 
-/// Process-wide global limits that drive the load-shed layer.
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+/// Process-wide GCRA token bucket (not inflight concurrency).
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalLimitConfig {
     /// Steady-state requests-per-second across the entire proxy. `0`
@@ -111,9 +125,4 @@ pub struct GlobalLimitConfig {
     /// Token-bucket burst budget on top of `rps`.
     #[serde(default)]
     pub burst: u32,
-    /// Maximum number of in-flight requests. Exceeding this triggers the
-    /// load-shed layer which immediately answers `503 Service Unavailable`
-    /// with a `Retry-After` header. `0` disables the load-shed layer.
-    #[serde(default)]
-    pub inflight_max: u32,
 }

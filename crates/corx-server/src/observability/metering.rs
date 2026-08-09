@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Buf;
+use corx_core::error::ProxyError;
 use corx_core::observability::BYTES_TRANSFERRED;
 use http_body::{Body, Frame, SizeHint};
 use pin_project_lite::pin_project;
@@ -68,4 +69,76 @@ where
     fn size_hint(&self) -> SizeHint {
         self.inner.size_hint()
     }
+}
+
+pin_project! {
+    /// Caps total bytes read from an inner body. When the budget is exhausted
+    /// the stream ends with [`ProxyError::PayloadTooLarge`].
+    ///
+    /// `max_bytes = 0` disables the cap (pass-through).
+    pub struct LimitingBody<B> {
+        #[pin]
+        inner: B,
+        max_bytes: u64,
+        seen: u64,
+    }
+}
+
+impl<B> LimitingBody<B> {
+    /// Wrap `inner`, aborting after `max_bytes` of data frames.
+    pub const fn new(inner: B, max_bytes: u64) -> Self {
+        Self {
+            inner,
+            max_bytes,
+            seen: 0,
+        }
+    }
+}
+
+impl<B> Body for LimitingBody<B>
+where
+    B: Body,
+    B::Data: Buf,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    type Data = B::Data;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.project();
+        if over_budget(*this.max_bytes, *this.seen) {
+            return Poll::Ready(Some(Err(Box::new(ProxyError::PayloadTooLarge))));
+        }
+
+        match this.inner.poll_frame(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(Box::new(err)))),
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref() {
+                    let n = u64::try_from(data.remaining()).unwrap_or(u64::MAX);
+                    *this.seen = this.seen.saturating_add(n);
+                }
+                if over_budget(*this.max_bytes, *this.seen) {
+                    return Poll::Ready(Some(Err(Box::new(ProxyError::PayloadTooLarge))));
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+const fn over_budget(max_bytes: u64, seen: u64) -> bool {
+    max_bytes > 0 && seen > max_bytes
 }

@@ -1,17 +1,15 @@
 //! Process-wide load shedding.
 //!
-//! When [`GlobalLimitConfig::inflight_max`] is non-zero, this layer rejects
+//! When [`LimitsConfig::inflight_max`] is non-zero, this layer rejects
 //! every additional request with `503 Service Unavailable` once the
 //! configured concurrency cap is reached. Rejections carry a `Retry-After`
-//! hint and bump the `corx_rate_limited_total{dimension="global"}` counter
-//! so existing dashboards light up identically to other shed paths.
+//! hint and bump the `corx_rate_limited_total{dimension="inflight"}` counter.
 //!
-//! `inflight_max = 0` keeps the layer on the request path but as a no-op,
-//! avoiding the cost of swapping layer stacks on configuration reload.
+//! `inflight_max = 0` keeps the layer on the request path but as a no-op.
 //!
-//! [`GlobalLimitConfig::inflight_max`]: corx_core::config::GlobalLimitConfig::inflight_max
+//! [`LimitsConfig::inflight_max`]: corx_core::config::LimitsConfig::inflight_max
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::{Request, State};
 use axum::middleware::Next;
@@ -27,23 +25,33 @@ pub async fn load_shed_layer(
     request: Request,
     next: Next,
 ) -> Response {
-    let max = u64::from(state.build.policies().config.rate_limit.global.inflight_max);
+    let max = u64::from(state.build.immutable_limits.inflight_max);
     if max == 0 {
         return next.run(request).await;
     }
 
-    let counter = &state.build.inflight;
+    let counter = state.build.inflight.as_ref();
     let prev = counter.fetch_add(1, Ordering::AcqRel);
     if prev >= max {
-        // Restore the counter; we never actually entered service.
         counter.fetch_sub(1, Ordering::AcqRel);
-        metrics::counter!(observability::RATE_LIMITED, "dimension" => "global").increment(1);
+        metrics::counter!(observability::RATE_LIMITED, "dimension" => "inflight").increment(1);
         return shed_response();
     }
 
-    let response = next.run(request).await;
-    counter.fetch_sub(1, Ordering::AcqRel);
-    response
+    // RAII permit: decrements on panic, cancel, or normal return.
+    let _permit = InflightPermit { counter };
+    next.run(request).await
+}
+
+/// Holds one inflight slot until drop.
+struct InflightPermit<'a> {
+    counter: &'a AtomicU64,
+}
+
+impl Drop for InflightPermit<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 fn shed_response() -> Response {

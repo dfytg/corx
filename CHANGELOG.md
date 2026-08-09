@@ -19,12 +19,31 @@ binary CLI surface.
 - `[security.auth]` — optional `bearer` shared-secret authentication.
 - `security.require_client_binding` — hard-fail startup without origin
   whitelist, bearer auth, or mTLS.
-- `[target]` — host/scheme admission (`any_public` | `allowlist` | `denylist`).
-- `[circuit_breaker]` — process-local per-host circuit breaker.
-- `limits.redirect_policy` — `follow` | `block` | `rewrite`.
+- `[target]` — host/scheme admission (`any_public` | `allowlist` | `denylist`),
+  enforced on **every redirect hop**.
+- `[circuit_breaker]` — process-local per-host circuit breaker (`max_hosts`
+  soft cap, default 8192).
+- `limits.redirect_policy` — `follow` | `block` | `rewrite` (rewrite stamps
+  proxy path-prefix `Location`).
+- `limits.inflight_max` — process concurrency load-shed (moved from
+  `rate_limit.global`).
+- `limits.max_response_body_bytes` — streaming response size cap (default
+  50 MiB; `0` = unlimited).
+- `rate_limit.max_keys` — fail-closed cardinality cap for keyed GCRA maps.
 - `cors.origins` + `cors.allow_any_origin` (unified origin list).
+- CatchPanic layer; load-shed inflight RAII permit; hot-reload retains
+  circuit / rate-limit maps when those config sections are unchanged.
 
 ### Changed (BREAKING)
+
+- `rate_limit.global.inflight_max` **removed** — use `limits.inflight_max`.
+- `rate_limit.enabled` default is now **`true`** (GCRA on by default).
+- Client error JSON `message` is kind-stable (no internal DNS/connect detail).
+- `CircuitDecision` public enum removed; `CircuitBreaker::check` returns
+  `Result<(), ProxyError>`.
+- CORS middleware sits outside auth/load-shed/header-limit so 401/503/431
+  include CORS headers; success path no longer double-stamps CORS in the
+  handler.
 
 - Cleartext listeners honour `server.graceful_shutdown` with a force-abort
   deadline after SIGTERM/Ctrl+C (previously only the TLS path used the

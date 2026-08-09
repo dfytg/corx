@@ -28,6 +28,7 @@ use tower_service::Service;
 use crate::config::RedirectPolicy;
 use crate::error::ProxyError;
 use crate::observability;
+use crate::policy::{CircuitBreaker, CircuitHop, TargetPolicy};
 use crate::proxy::redirect::{self, NextHop};
 use crate::proxy::ssrf::SsrfGuard;
 
@@ -58,7 +59,7 @@ pub struct ClientConfig {
     pub connect_timeout: Duration,
     /// Maximum number of redirects to follow when policy is `Follow`.
     pub max_redirects: u8,
-    /// Allow `https \u2192 http` redirect downgrades. Default: `false`.
+    /// Allow `https → http` redirect downgrades. Default: `false`.
     pub allow_https_to_http_downgrade: bool,
     /// How 3xx responses are handled.
     pub redirect_policy: RedirectPolicy,
@@ -72,12 +73,14 @@ pub struct Upstream {
     client: HyperClient,
     guard: Arc<SsrfGuard>,
     config: Arc<ClientConfig>,
+    target_policy: TargetPolicy,
 }
 
 impl std::fmt::Debug for Upstream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Upstream")
             .field("config", &self.config)
+            .field("target_policy", &self.target_policy)
             .finish_non_exhaustive()
     }
 }
@@ -87,13 +90,18 @@ impl Upstream {
     ///
     /// The supplied [`SsrfGuard`] is consulted inside the DNS resolver used
     /// by this client: no upstream connection is made to an address that
-    /// violates SSRF policy.
+    /// violates SSRF policy. [`TargetPolicy`] is enforced on the initial
+    /// request URI and on every redirect hop before connect.
     ///
     /// # Errors
     ///
     /// Returns an error when the platform TLS root store cannot be loaded
     /// (`rustls-platform-verifier`).
-    pub fn new(config: ClientConfig, guard: SsrfGuard) -> Result<Self, ProxyError> {
+    pub fn new(
+        config: ClientConfig,
+        guard: SsrfGuard,
+        target_policy: TargetPolicy,
+    ) -> Result<Self, ProxyError> {
         let guard = Arc::new(guard);
 
         let mut http = HttpConnector::new_with_resolver(GuardedResolver {
@@ -122,68 +130,76 @@ impl Upstream {
             client,
             guard,
             config: Arc::new(config),
+            target_policy,
         })
     }
 
     /// Executes a request against the upstream, following redirects up to
     /// the configured budget.
     ///
+    /// Each hop is admitted by [`TargetPolicy`] and the per-host
+    /// [`CircuitBreaker`] before the TCP connect. A [`CircuitHop`] guard
+    /// records failure if the hop is cancelled without settlement.
+    ///
     /// # Errors
     ///
-    /// Surfaces SSRF violations, DNS failures, upstream connection errors,
-    /// TLS failures and redirect loops as [`ProxyError`] variants.
+    /// Surfaces SSRF violations, target policy rejections, circuit opens,
+    /// DNS failures, upstream connection errors, TLS failures and redirect
+    /// loops as [`ProxyError`] variants.
     pub async fn execute(
         &self,
         request: Request<UpstreamBody>,
+        circuit: &CircuitBreaker,
     ) -> Result<hyper::Response<Incoming>, ProxyError> {
         let max_redirects = self.config.max_redirects;
         let allow_downgrade = self.config.allow_https_to_http_downgrade;
         let (mut state, first_request) = split_initial(request);
-        let target_host = state
-            .uri
-            .host()
-            .map_or_else(|| "unknown".to_owned(), str::to_owned);
         let mut hops: u8 = 0;
         let mut next_request = first_request;
+        let metric_host = host_of(&state.uri);
 
         loop {
-            let response = self
-                .client
-                .request(next_request)
-                .await
-                .map_err(|err| ProxyError::Upstream(Box::new(err)))?;
+            self.target_policy.check_uri(next_request.uri())?;
+            let hop = CircuitHop::admit(circuit, host_of(next_request.uri()))?;
+
+            let response = match self.client.request(next_request).await {
+                Ok(response) => response,
+                Err(err) => {
+                    hop.failure();
+                    return Err(ProxyError::Upstream(Box::new(err)));
+                }
+            };
 
             if !redirect::is_redirect(response.status()) {
-                metrics::histogram!(
-                    observability::REDIRECT_HOPS,
-                    "target_host" => target_host.clone(),
-                )
-                .record(f64::from(hops));
+                settle_terminal(hop, circuit, response.status());
+                record_redirect_hops(&metric_host, hops);
                 return Ok(response);
             }
 
             match self.config.redirect_policy {
                 RedirectPolicy::Block => {
+                    hop.success();
                     return Err(ProxyError::RedirectBlocked(
                         "redirect policy is block".to_owned(),
                     ));
                 }
                 RedirectPolicy::Rewrite => {
-                    // Return the 3xx as-is; the server layer rewrites Location
-                    // to the proxy path-prefix form when desired.
-                    metrics::histogram!(
-                        observability::REDIRECT_HOPS,
-                        "target_host" => target_host.clone(),
-                    )
-                    .record(f64::from(hops));
+                    hop.success();
+                    record_redirect_hops(&metric_host, hops);
                     return Ok(response);
                 }
                 RedirectPolicy::Follow => {}
             }
 
             if hops >= max_redirects {
+                hop.failure();
                 return Err(ProxyError::TooManyRedirects(max_redirects));
             }
+
+            // Transport hop succeeded (got 3xx). Settle before prepare_next so
+            // a Location parse/policy error cannot leave half-open unaccounted.
+            hop.success();
+
             match redirect::prepare_next(&mut state, &response, allow_downgrade)? {
                 NextHop::Continue(req) => {
                     next_request = *req;
@@ -191,11 +207,7 @@ impl Upstream {
                 }
                 NextHop::Stop(reason) => {
                     tracing::debug!(reason, hops, "stopping redirect chain");
-                    metrics::histogram!(
-                        observability::REDIRECT_HOPS,
-                        "target_host" => target_host.clone(),
-                    )
-                    .record(f64::from(hops));
+                    record_redirect_hops(&metric_host, hops);
                     return Ok(response);
                 }
             }
@@ -214,6 +226,33 @@ impl Upstream {
     pub fn user_agent(&self) -> &str {
         &self.config.user_agent
     }
+
+    /// Target admission policy enforced on every hop.
+    #[must_use]
+    pub const fn target_policy(&self) -> &TargetPolicy {
+        &self.target_policy
+    }
+}
+
+fn host_of(uri: &http::Uri) -> String {
+    uri.host()
+        .map_or_else(|| "unknown".to_owned(), str::to_owned)
+}
+
+fn settle_terminal(hop: CircuitHop<'_>, circuit: &CircuitBreaker, status: http::StatusCode) {
+    if circuit.count_5xx() && status.is_server_error() {
+        hop.failure();
+    } else {
+        hop.success();
+    }
+}
+
+fn record_redirect_hops(metric_host: &str, hops: u8) {
+    metrics::histogram!(
+        observability::REDIRECT_HOPS,
+        "target_host" => metric_host.to_owned(),
+    )
+    .record(f64::from(hops));
 }
 
 fn split_initial(

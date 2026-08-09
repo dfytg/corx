@@ -42,11 +42,16 @@ Three knobs to tune in production:
 1. **`limits.max_request_body_bytes`** — the proxy buffers nothing, so
    this is mostly a denial-of-service guard. 10 MiB suits API gateways;
    bump to 100 MiB for upload-heavy workloads.
-2. **`rate_limit.global.inflight_max`** — caps concurrent requests
-   process-wide and powers the load-shed layer. Set 2-3x p99 concurrency.
-3. **`upstream.pool_max_idle_per_host`** — bigger means fewer TLS
+2. **`limits.inflight_max`** — caps concurrent requests process-wide and
+   powers the load-shed layer (metric dimension `inflight`). Set
+   2–3× p99 concurrency; `0` disables load-shed.
+3. **`limits.max_response_body_bytes`** — streaming response size cap
+   (default 50 MiB; `0` = unlimited). Guards bandwidth amplification.
+4. **`upstream.pool_max_idle_per_host`** — bigger means fewer TLS
    handshakes per upstream; right-size against the connection cap of the
    backend.
+5. **`rate_limit.enabled` / `rate_limit.max_keys`** — GCRA dimensions and
+   keyed-map cardinality cap (fail-closed when full).
 
 ## Subcommands
 

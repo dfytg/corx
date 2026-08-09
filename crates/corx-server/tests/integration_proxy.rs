@@ -100,6 +100,9 @@ fn make_stack(mutator: impl FnOnce(&mut Config)) -> (axum::Router, MockServer) {
     // Circuit breaker would trip under tight unit failure bursts; keep on
     // but with a high threshold so happy-path tests are not flaky.
     config.circuit_breaker.failure_threshold = 10_000;
+    // Isolation: disable GCRA so concurrent tests do not share process
+    // budgets (limiter state is per ServerBuild, but keep headroom clear).
+    config.rate_limit.enabled = false;
 
     mutator(&mut config);
 
@@ -356,6 +359,165 @@ async fn bearer_auth_accepts_valid_token() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn redirect_follow_rejects_hop_outside_allowlist() {
+    use corx_core::config::TargetMode;
+    // Two-phase setup so the allowlist can include the mock's host.
+    ensure_crypto_provider();
+    let mock = MockServer::start().await;
+    let host = mock_host(&mock);
+
+    let mut config = Config::default();
+    config.ssrf.mode = SsrfMode::Strict;
+    config
+        .ssrf
+        .extra_allowed_cidrs
+        .push("127.0.0.0/8".parse().unwrap());
+    config.cors.allow_any_origin = true;
+    config.circuit_breaker.failure_threshold = 10_000;
+    config.rate_limit.enabled = false;
+    config.target.mode = TargetMode::Allowlist;
+    config.target.hosts = vec![host];
+    config.limits.redirect_policy = corx_core::config::RedirectPolicy::Follow;
+
+    let metrics = MetricsHandle::for_test();
+    let build = ServerBuild::from_config(config, metrics).expect("build server");
+    let router = build_router(AppState::new(build));
+
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", "https://evil.example/secret"),
+        )
+        .mount(&mock)
+        .await;
+
+    let response = router
+        .oneshot(with_peer(
+            Request::builder().uri(upstream_url(&mock, "/start")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "redirect hop outside allowlist must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn redirect_follow_admits_hop_on_allowlist() {
+    use corx_core::config::TargetMode;
+    // Two mock servers on loopback — both allowlisted by suffix.
+    let mock_b = futures::executor::block_on(MockServer::start());
+    let (router, mock_a) = make_stack(|cfg| {
+        cfg.target.mode = TargetMode::Allowlist;
+        cfg.target.hosts = vec!["127.0.0.1".into()];
+        cfg.limits.redirect_policy = corx_core::config::RedirectPolicy::Follow;
+        cfg.ssrf
+            .extra_allowed_cidrs
+            .push("127.0.0.0/8".parse().unwrap());
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/final"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("landed"))
+        .mount(&mock_b)
+        .await;
+
+    let location = format!("{}/final", mock_b.uri().trim_end_matches('/'));
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", location.as_str()))
+        .mount(&mock_a)
+        .await;
+
+    let response = router
+        .oneshot(with_peer(
+            Request::builder().uri(upstream_url(&mock_a, "/start")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], b"landed");
+}
+
+fn mock_host(mock: &MockServer) -> String {
+    // mock.uri() is like http://127.0.0.1:PORT
+    let uri = mock.uri();
+    let without_scheme = uri
+        .strip_prefix("http://")
+        .or_else(|| uri.strip_prefix("https://"))
+        .unwrap_or(&uri);
+    without_scheme
+        .split(':')
+        .next()
+        .unwrap_or(without_scheme)
+        .to_owned()
+}
+
+#[tokio::test]
+async fn error_payload_is_client_safe() {
+    let (router, _mock) = make_stack(|cfg| {
+        cfg.ssrf.extra_allowed_cidrs.clear();
+    });
+    let response = router
+        .oneshot(with_peer(
+            Request::builder().uri("/http://localhost/private"),
+        ))
+        .await
+        .unwrap();
+    // Forbidden (SSRF) or bad gateway depending on resolution path.
+    assert!(
+        matches!(
+            response.status(),
+            StatusCode::FORBIDDEN | StatusCode::BAD_GATEWAY
+        ),
+        "unexpected status {}",
+        response.status()
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8_lossy(&body);
+    // Client payload must not echo raw resolver / OS error strings.
+    assert!(
+        !text.contains("os error") && !text.contains("ConnectError"),
+        "leaked internal detail: {text}"
+    );
+}
+
+#[tokio::test]
+async fn redirect_rewrite_rewrites_location_to_proxy_path() {
+    let (router, mock) = make_stack(|cfg| {
+        cfg.limits.redirect_policy = corx_core::config::RedirectPolicy::Rewrite;
+    });
+    Mock::given(method("GET"))
+        .and(path("/bounce"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", "https://next.example/path?q=1"),
+        )
+        .mount(&mock)
+        .await;
+
+    let response = router
+        .oneshot(with_peer(
+            Request::builder().uri(upstream_url(&mock, "/bounce")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .expect("Location")
+        .to_str()
+        .unwrap();
+    assert_eq!(
+        location, "/https://next.example/path?q=1",
+        "rewrite policy must prefix absolute Location with /"
+    );
 }
 
 #[tokio::test]

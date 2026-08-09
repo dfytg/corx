@@ -1,13 +1,18 @@
 //! Multi-dimensional rate limiter (per-Origin / per-IP / per-Target-Host /
 //! Global) backed by `governor`'s GCRA token bucket.
 //!
-//! All four dimensions are independent and can be enabled \u00e0 la carte. The
+//! All four dimensions are independent and can be enabled à la carte. The
 //! hot path is lock-free: keyed limiters use `dashmap`, the global limiter is
 //! a single atomic. When a dimension trips, the
 //! `corx_rate_limited_total{dimension}` counter is incremented before the
 //! request is rejected so operators can see *which* dimension is shedding
 //! load.
+//!
+//! Keyed dimensions enforce [`RateLimitConfig::max_keys`]: when the key
+//! registry is full, unknown keys are rejected fail-closed rather than
+//! growing without bound.
 
+use std::hash::Hash;
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -17,6 +22,8 @@ use corx_core::config::{
 };
 use corx_core::error::ProxyError;
 use corx_core::observability;
+use dashmap::DashMap;
+use foldhash::fast::RandomState;
 use governor::clock::QuantaClock;
 use governor::state::keyed::DashMapStateStore;
 use governor::state::{InMemoryState, NotKeyed};
@@ -47,6 +54,7 @@ pub struct RateLimiter {
 
 struct Inner {
     enabled: bool,
+    max_keys: usize,
     origin: Option<OriginDimension>,
     ip: Option<IpDimension>,
     host: Option<HostDimension>,
@@ -55,22 +63,26 @@ struct Inner {
 
 struct OriginDimension {
     limiter: KeyedLimiter<String>,
+    keys: DashMap<String, (), RandomState>,
     unlimited: RegexSet,
 }
 
 struct IpDimension {
     limiter: KeyedLimiter<IpAddr>,
+    keys: DashMap<IpAddr, (), RandomState>,
     trusted: Vec<IpNet>,
 }
 
 struct HostDimension {
     limiter: KeyedLimiter<String>,
+    keys: DashMap<String, (), RandomState>,
 }
 
 impl std::fmt::Debug for RateLimiter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RateLimiter")
             .field("enabled", &self.inner.enabled)
+            .field("max_keys", &self.inner.max_keys)
             .field("origin_enabled", &self.inner.origin.is_some())
             .field("ip_enabled", &self.inner.ip.is_some())
             .field("target_host_enabled", &self.inner.host.is_some())
@@ -91,6 +103,7 @@ impl RateLimiter {
             return Ok(Self {
                 inner: Arc::new(Inner {
                     enabled: false,
+                    max_keys: cfg.max_keys.max(1),
                     origin: None,
                     ip: None,
                     host: None,
@@ -102,11 +115,12 @@ impl RateLimiter {
         let origin = build_origin(&cfg.origin)?;
         let ip = build_ip(&cfg.ip)?;
         let host = build_host(cfg.target_host)?;
-        let global = build_global(&cfg.global)?;
+        let global = build_global(cfg.global)?;
 
         Ok(Self {
             inner: Arc::new(Inner {
                 enabled: true,
+                max_keys: cfg.max_keys.max(1),
                 origin,
                 ip,
                 host,
@@ -122,32 +136,32 @@ impl RateLimiter {
     ///
     /// # Errors
     ///
-    /// Returns [`ProxyError::RateLimited`] when any dimension is exhausted.
+    /// Returns [`ProxyError::RateLimited`] when any dimension is exhausted
+    /// or when a keyed store is full and the key is new.
     pub fn check(&self, ctx: &RateContext<'_>) -> Result<(), ProxyError> {
         if !self.inner.enabled {
             return Ok(());
         }
 
+        let max_keys = self.inner.max_keys;
+
         if let Some(dim) = self.inner.origin.as_ref()
             && let Some(origin) = ctx.origin
             && !dim.unlimited.is_match(origin)
-            && dim.limiter.check_key(&origin.to_owned()).is_err()
         {
-            return reject("origin");
+            admit_and_check_str(&dim.limiter, &dim.keys, origin, max_keys, "origin")?;
         }
 
         if let Some(dim) = self.inner.ip.as_ref()
             && !is_trusted(&dim.trusted, ctx.client_ip)
-            && dim.limiter.check_key(&ctx.client_ip).is_err()
         {
-            return reject("ip");
+            admit_and_check(&dim.limiter, &dim.keys, &ctx.client_ip, max_keys, "ip")?;
         }
 
         if let Some(dim) = self.inner.host.as_ref()
             && let Some(host) = ctx.target_host
-            && dim.limiter.check_key(&host.to_owned()).is_err()
         {
-            return reject("target_host");
+            admit_and_check_str(&dim.limiter, &dim.keys, host, max_keys, "target_host")?;
         }
 
         if let Some(global) = self.inner.global.as_ref()
@@ -158,6 +172,63 @@ impl RateLimiter {
 
         Ok(())
     }
+}
+
+fn admit_and_check_str(
+    limiter: &KeyedLimiter<String>,
+    keys: &DashMap<String, (), RandomState>,
+    key: &str,
+    max_keys: usize,
+    dimension: &'static str,
+) -> Result<(), ProxyError> {
+    let owned = key.to_owned();
+    admit_key(keys, &owned, max_keys, dimension)?;
+    if limiter.check_key(&owned).is_err() {
+        return reject(dimension);
+    }
+    Ok(())
+}
+
+fn admit_and_check<K>(
+    limiter: &KeyedLimiter<K>,
+    keys: &DashMap<K, (), RandomState>,
+    key: &K,
+    max_keys: usize,
+    dimension: &'static str,
+) -> Result<(), ProxyError>
+where
+    K: Clone + Eq + Hash,
+{
+    admit_key(keys, key, max_keys, dimension)?;
+    if limiter.check_key(key).is_err() {
+        return reject(dimension);
+    }
+    Ok(())
+}
+
+/// Register a new key if needed. On concurrent overshoot past `max_keys`,
+/// remove the insertion and reject (fail-closed).
+fn admit_key<K>(
+    keys: &DashMap<K, (), RandomState>,
+    key: &K,
+    max_keys: usize,
+    dimension: &'static str,
+) -> Result<(), ProxyError>
+where
+    K: Clone + Eq + Hash,
+{
+    if keys.contains_key(key) {
+        return Ok(());
+    }
+    if keys.len() >= max_keys {
+        return reject(dimension);
+    }
+    keys.insert(key.clone(), ());
+    if keys.len() > max_keys {
+        keys.remove(key);
+        return reject(dimension);
+    }
+    Ok(())
 }
 
 fn reject(dimension: &'static str) -> Result<(), ProxyError> {
@@ -172,6 +243,10 @@ fn quota(rps: u32, burst: u32) -> anyhow::Result<Quota> {
     Ok(Quota::per_second(rps).allow_burst(burst))
 }
 
+fn empty_key_map<K: Eq + Hash>() -> DashMap<K, (), RandomState> {
+    DashMap::with_hasher(RandomState::default())
+}
+
 fn build_origin(cfg: &OriginLimitConfig) -> anyhow::Result<Option<OriginDimension>> {
     if cfg.rps == 0 {
         return Ok(None);
@@ -181,7 +256,11 @@ fn build_origin(cfg: &OriginLimitConfig) -> anyhow::Result<Option<OriginDimensio
         GovRateLimiter::dashmap_with_clock(q, QuantaClock::default());
     let unlimited = RegexSet::new(&cfg.unlimited_patterns)
         .map_err(|err| anyhow::anyhow!("invalid origin.unlimited_patterns regex: {err}"))?;
-    Ok(Some(OriginDimension { limiter, unlimited }))
+    Ok(Some(OriginDimension {
+        limiter,
+        keys: empty_key_map(),
+        unlimited,
+    }))
 }
 
 fn build_ip(cfg: &IpLimitConfig) -> anyhow::Result<Option<IpDimension>> {
@@ -193,6 +272,7 @@ fn build_ip(cfg: &IpLimitConfig) -> anyhow::Result<Option<IpDimension>> {
         GovRateLimiter::dashmap_with_clock(q, QuantaClock::default());
     Ok(Some(IpDimension {
         limiter,
+        keys: empty_key_map(),
         trusted: cfg.trusted_cidrs.clone(),
     }))
 }
@@ -204,10 +284,13 @@ fn build_host(cfg: HostLimitConfig) -> anyhow::Result<Option<HostDimension>> {
     let q = quota(cfg.rps, cfg.burst)?;
     let limiter: KeyedLimiter<String> =
         GovRateLimiter::dashmap_with_clock(q, QuantaClock::default());
-    Ok(Some(HostDimension { limiter }))
+    Ok(Some(HostDimension {
+        limiter,
+        keys: empty_key_map(),
+    }))
 }
 
-fn build_global(cfg: &GlobalLimitConfig) -> anyhow::Result<Option<DirectLimiter>> {
+fn build_global(cfg: GlobalLimitConfig) -> anyhow::Result<Option<DirectLimiter>> {
     if cfg.rps == 0 {
         return Ok(None);
     }
@@ -235,6 +318,7 @@ mod tests {
     fn cfg() -> RateLimitConfig {
         RateLimitConfig {
             enabled: true,
+            max_keys: 16_384,
             origin: OriginLimitConfig {
                 rps: 0,
                 burst: 0,
@@ -246,11 +330,7 @@ mod tests {
                 trusted_cidrs: vec![],
             },
             target_host: HostLimitConfig { rps: 0, burst: 0 },
-            global: GlobalLimitConfig {
-                rps: 0,
-                burst: 0,
-                inflight_max: 0,
-            },
+            global: GlobalLimitConfig { rps: 0, burst: 0 },
         }
     }
 
@@ -318,7 +398,6 @@ mod tests {
         let lim = RateLimiter::from_config(&c).unwrap();
         assert!(lim.check(&ctx(None, "1.2.3.4", "x.test")).is_ok());
         assert!(lim.check(&ctx(None, "1.2.3.4", "x.test")).is_err());
-        // Different IP has its own bucket.
         assert!(lim.check(&ctx(None, "1.2.3.5", "x.test")).is_ok());
     }
 
@@ -342,7 +421,6 @@ mod tests {
         let lim = RateLimiter::from_config(&c).unwrap();
         assert!(lim.check(&ctx(None, "1.1.1.1", "popular.test")).is_ok());
         assert!(lim.check(&ctx(None, "2.2.2.2", "popular.test")).is_err());
-        // Different upstream uses an independent bucket.
         assert!(lim.check(&ctx(None, "3.3.3.3", "rare.test")).is_ok());
     }
 
@@ -359,8 +437,6 @@ mod tests {
     #[test]
     fn first_failing_dimension_wins() {
         let mut c = cfg();
-        // Origin is the most specific; an over-quota origin must not consume
-        // a token from the more permissive dimensions below.
         c.origin.rps = 1;
         c.origin.burst = 1;
         c.global.rps = 1_000;
@@ -368,5 +444,28 @@ mod tests {
         let lim = RateLimiter::from_config(&c).unwrap();
         assert!(lim.check(&ctx(Some("o"), "1.1.1.1", "a.test")).is_ok());
         assert!(lim.check(&ctx(Some("o"), "1.1.1.1", "a.test")).is_err());
+    }
+
+    #[test]
+    fn max_keys_rejects_new_keys_when_full() {
+        let mut c = cfg();
+        c.max_keys = 1;
+        c.origin.rps = 100;
+        c.origin.burst = 100;
+        let lim = RateLimiter::from_config(&c).unwrap();
+        assert!(
+            lim.check(&ctx(Some("https://a.test"), "1.1.1.1", "h"))
+                .is_ok()
+        );
+        assert!(
+            lim.check(&ctx(Some("https://b.test"), "1.1.1.1", "h"))
+                .is_err(),
+            "second distinct origin must be rejected when max_keys=1"
+        );
+        assert!(
+            lim.check(&ctx(Some("https://a.test"), "1.1.1.1", "h"))
+                .is_ok(),
+            "existing key remains admissible"
+        );
     }
 }

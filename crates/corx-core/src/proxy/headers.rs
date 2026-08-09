@@ -40,17 +40,32 @@ pub struct HeaderFilter {
 }
 
 impl HeaderFilter {
-    /// Compile a filter from the configured header names. Names that fail to
-    /// parse are silently dropped so a typo in the config cannot wedge the
-    /// proxy at startup.
+    /// Compile a filter from the configured header names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any name fails to parse as a valid HTTP header
+    /// name (fail-closed: typos must not silently disable stripping).
+    pub fn try_new(extra_deny: &[String]) -> Result<Self, String> {
+        let mut names = Vec::with_capacity(extra_deny.len());
+        for raw in extra_deny {
+            let name = raw
+                .parse::<HeaderName>()
+                .map_err(|err| format!("invalid header name `{raw}`: {err}"))?;
+            names.push(name);
+        }
+        Ok(Self { extra_deny: names })
+    }
+
+    /// Compile a filter, panicking only in tests that pass known-good names.
     #[must_use]
     pub fn new(extra_deny: &[String]) -> Self {
-        Self {
-            extra_deny: extra_deny
-                .iter()
-                .filter_map(|raw| raw.parse::<HeaderName>().ok())
-                .collect(),
-        }
+        Self::try_new(extra_deny).unwrap_or_else(|err| {
+            tracing::error!(%err, "invalid header filter config; using empty deny list");
+            Self {
+                extra_deny: Vec::new(),
+            }
+        })
     }
 
     /// Strip every header that must not survive a proxy hop: the

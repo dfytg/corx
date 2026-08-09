@@ -39,7 +39,10 @@ pub struct ReloadHandle {
     immutable_server: Arc<ServerConfig>,
     immutable_metrics_endpoint: String,
     immutable_max_body_bytes: u64,
+    immutable_max_request_header_bytes: u32,
     immutable_request_timeout: std::time::Duration,
+    immutable_inflight_max: u32,
+    immutable_max_response_body_bytes: u64,
 }
 
 impl ReloadHandle {
@@ -55,7 +58,8 @@ impl ReloadHandle {
     pub fn reload(&self, path: Option<&Path>) -> anyhow::Result<()> {
         let config = config_loader::load(path)?;
         self.assert_immutable(&config)?;
-        let policies = LivePolicies::build(config)?;
+        let previous = self.policies.load_full();
+        let policies = LivePolicies::build_from(config, Some(previous.as_ref()))?;
         self.policies.store(Arc::new(policies));
         Ok(())
     }
@@ -79,8 +83,20 @@ impl ReloadHandle {
         if new.limits.max_request_body_bytes != self.immutable_max_body_bytes {
             anyhow::bail!("limits.max_request_body_bytes cannot be changed by reload");
         }
+        if new.limits.max_request_header_bytes != self.immutable_max_request_header_bytes {
+            anyhow::bail!("limits.max_request_header_bytes cannot be changed by reload");
+        }
         if new.limits.request_timeout != self.immutable_request_timeout {
             anyhow::bail!("limits.request_timeout cannot be changed by reload");
+        }
+        // inflight_max / max_response_body_bytes are taken from immutable_limits
+        // at serve time for load-shed and response capping; reject mid-flight
+        // changes so operators restart for those knobs.
+        if new.limits.inflight_max != self.immutable_inflight_max {
+            anyhow::bail!("limits.inflight_max cannot be changed by reload");
+        }
+        if new.limits.max_response_body_bytes != self.immutable_max_response_body_bytes {
+            anyhow::bail!("limits.max_response_body_bytes cannot be changed by reload");
         }
         if new.observability.metrics_endpoint != self.immutable_metrics_endpoint {
             anyhow::bail!("observability.metrics_endpoint cannot be changed by reload");
@@ -116,7 +132,10 @@ impl ServerBuild {
             immutable_server: Arc::clone(&self.immutable_server),
             immutable_metrics_endpoint: self.immutable_metrics_endpoint.clone(),
             immutable_max_body_bytes: self.immutable_limits.max_request_body_bytes,
+            immutable_max_request_header_bytes: self.immutable_limits.max_request_header_bytes,
             immutable_request_timeout: self.immutable_limits.request_timeout,
+            immutable_inflight_max: self.immutable_limits.inflight_max,
+            immutable_max_response_body_bytes: self.immutable_limits.max_response_body_bytes,
         }
     }
 }
@@ -199,7 +218,10 @@ mod tests {
         let immutable_server = Arc::new(config.server.clone());
         let immutable_metrics_endpoint = config.observability.metrics_endpoint.clone();
         let immutable_max_body_bytes = config.limits.max_request_body_bytes;
+        let immutable_max_request_header_bytes = config.limits.max_request_header_bytes;
         let immutable_request_timeout = config.limits.request_timeout;
+        let immutable_inflight_max = config.limits.inflight_max;
+        let immutable_max_response_body_bytes = config.limits.max_response_body_bytes;
 
         let policies = LivePolicies::build(config.clone()).expect("policies build");
         let handle = ReloadHandle {
@@ -207,7 +229,10 @@ mod tests {
             immutable_server,
             immutable_metrics_endpoint,
             immutable_max_body_bytes,
+            immutable_max_request_header_bytes,
             immutable_request_timeout,
+            immutable_inflight_max,
+            immutable_max_response_body_bytes,
         };
         (handle, config)
     }
@@ -249,6 +274,30 @@ mod tests {
         handle
             .assert_immutable(&next)
             .expect("mutable field change should pass");
+    }
+
+    #[test]
+    fn rebuild_retains_circuit_when_only_cors_changes() {
+        ensure_crypto_provider();
+        let config = Config::default();
+        let first = LivePolicies::build(config.clone()).expect("build");
+        first.circuit.record_failure("h.test");
+        first.circuit.record_failure("h.test");
+        first.circuit.record_failure("h.test");
+        first.circuit.record_failure("h.test");
+        first.circuit.record_failure("h.test");
+        assert!(
+            first.circuit.check("h.test").is_err(),
+            "breaker should be open before reload"
+        );
+
+        let mut next = config;
+        next.cors.allow_any_origin = !next.cors.allow_any_origin;
+        let second = LivePolicies::build_from(next, Some(&first)).expect("rebuild");
+        assert!(
+            second.circuit.check("h.test").is_err(),
+            "open circuit must survive reload when circuit_breaker config is unchanged"
+        );
     }
 
     #[test]

@@ -42,7 +42,7 @@ impl SsrfMode {
 }
 
 /// SSRF protection.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SsrfConfig {
     /// Operating mode. **Strict** is the production default.

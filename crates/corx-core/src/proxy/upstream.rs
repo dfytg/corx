@@ -235,7 +235,8 @@ impl Upstream {
 }
 
 fn host_of(uri: &http::Uri) -> String {
-    uri.host().map_or_else(|| "unknown".to_owned(), str::to_owned)
+    uri.host()
+        .map_or_else(|| "unknown".to_owned(), str::to_owned)
 }
 
 fn settle_terminal(hop: CircuitHop<'_>, circuit: &CircuitBreaker, status: http::StatusCode) {

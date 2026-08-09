@@ -496,8 +496,7 @@ async fn redirect_rewrite_rewrites_location_to_proxy_path() {
     Mock::given(method("GET"))
         .and(path("/bounce"))
         .respond_with(
-            ResponseTemplate::new(302)
-                .insert_header("location", "https://next.example/path?q=1"),
+            ResponseTemplate::new(302).insert_header("location", "https://next.example/path?q=1"),
         )
         .mount(&mock)
         .await;

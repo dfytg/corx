@@ -156,10 +156,7 @@ async fn execute_proxy(
     let outbound = Request::from_parts(parts, axum_to_upstream_body(body));
 
     let upstream_started = Instant::now();
-    let upstream_response = policies
-        .upstream
-        .execute(outbound, &policies.circuit)
-        .await;
+    let upstream_response = policies.upstream.execute(outbound, &policies.circuit).await;
     let upstream_elapsed = upstream_started.elapsed().as_secs_f64();
 
     let response = match upstream_response {

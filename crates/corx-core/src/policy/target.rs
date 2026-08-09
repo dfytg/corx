@@ -117,12 +117,12 @@ impl TargetPolicy {
     /// Returns [`ProxyError::TargetNotAllowed`] or [`ProxyError::InvalidUrl`]
     /// when the URI lacks a usable scheme/host or fails policy.
     pub fn check_uri(&self, uri: &Uri) -> Result<(), ProxyError> {
-        let scheme = uri.scheme_str().ok_or_else(|| {
-            ProxyError::InvalidUrl("hop URI lacks a scheme".to_owned())
-        })?;
-        let host = uri.host().ok_or_else(|| {
-            ProxyError::InvalidUrl("hop URI lacks a host".to_owned())
-        })?;
+        let scheme = uri
+            .scheme_str()
+            .ok_or_else(|| ProxyError::InvalidUrl("hop URI lacks a scheme".to_owned()))?;
+        let host = uri
+            .host()
+            .ok_or_else(|| ProxyError::InvalidUrl("hop URI lacks a host".to_owned()))?;
         self.check_authority(scheme, host)
     }
 }

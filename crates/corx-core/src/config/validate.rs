@@ -225,10 +225,8 @@ fn validate_rate_limit(cfg: &RateLimitConfig, report: &mut ValidationReport) {
         ));
     }
 
-    let any_enabled = cfg.origin.rps > 0
-        || cfg.ip.rps > 0
-        || cfg.target_host.rps > 0
-        || cfg.global.rps > 0;
+    let any_enabled =
+        cfg.origin.rps > 0 || cfg.ip.rps > 0 || cfg.target_host.rps > 0 || cfg.global.rps > 0;
     if !any_enabled {
         report.errors.push(ConfigError::new(
             "rate_limit",

@@ -49,9 +49,9 @@ impl HeaderFilter {
     pub fn try_new(extra_deny: &[String]) -> Result<Self, String> {
         let mut names = Vec::with_capacity(extra_deny.len());
         for raw in extra_deny {
-            let name = raw.parse::<HeaderName>().map_err(|err| {
-                format!("invalid header name `{raw}`: {err}")
-            })?;
+            let name = raw
+                .parse::<HeaderName>()
+                .map_err(|err| format!("invalid header name `{raw}`: {err}"))?;
             names.push(name);
         }
         Ok(Self { extra_deny: names })

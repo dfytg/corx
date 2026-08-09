@@ -13,9 +13,14 @@ use crate::observability;
 #[derive(Debug, Clone, Copy)]
 enum State {
     Closed,
-    Open { until: Instant },
+    Open {
+        until: Instant,
+    },
     /// `since` bounds half-open so cancelled probes cannot lock a host forever.
-    HalfOpen { probes: u32, since: Instant },
+    HalfOpen {
+        probes: u32,
+        since: Instant,
+    },
 }
 
 struct HostCircuit {

@@ -34,8 +34,9 @@ pub struct RateContext<'a> {
     pub origin: Option<&'a str>,
     /// Client IP as observed by the listener.
     pub client_ip: IpAddr,
-    /// Validated upstream target host.
-    pub target_host: &'a str,
+    /// Validated upstream target host. `None` skips the host dimension
+    /// (used for preflights whose path is not a parseable target URL).
+    pub target_host: Option<&'a str>,
 }
 
 /// Compiled, four-dimensional rate limiter.
@@ -143,7 +144,8 @@ impl RateLimiter {
         }
 
         if let Some(dim) = self.inner.host.as_ref()
-            && dim.limiter.check_key(&ctx.target_host.to_owned()).is_err()
+            && let Some(host) = ctx.target_host
+            && dim.limiter.check_key(&host.to_owned()).is_err()
         {
             return reject("target_host");
         }
@@ -256,7 +258,7 @@ mod tests {
         RateContext {
             origin,
             client_ip: ip.parse().unwrap(),
-            target_host: host,
+            target_host: Some(host),
         }
     }
 

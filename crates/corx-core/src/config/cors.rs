@@ -5,14 +5,16 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// CORS policy discriminant.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum CorsPolicyKind {
     /// Return `Access-Control-Allow-Origin: *`.
     Wildcard,
-    /// Reflect the request `Origin`, optionally gated by `allowlist`.
+    /// Reflect the request `Origin`, gated by [`CorsConfig::origins`] unless
+    /// [`CorsConfig::allow_any_origin`] is set.
+    #[default]
     Reflect,
-    /// Reflect `Origin` only if it matches one of the explicitly listed values.
+    /// Reflect `Origin` only if it is listed in [`CorsConfig::origins`].
     Explicit,
 }
 
@@ -21,13 +23,16 @@ pub enum CorsPolicyKind {
 #[serde(deny_unknown_fields)]
 pub struct CorsConfig {
     /// Which CORS policy to apply.
+    #[serde(default)]
     pub policy: CorsPolicyKind,
-    /// Used by [`CorsPolicyKind::Reflect`]; empty means "allow any origin".
+    /// Origins used by `reflect` (as an allow-gate) and by `explicit`
+    /// (as the exclusive list). Exact-match strings.
     #[serde(default)]
-    pub allowlist: Vec<String>,
-    /// Used by [`CorsPolicyKind::Explicit`].
+    pub origins: Vec<String>,
+    /// When `policy = reflect` and `origins` is empty, echo any request
+    /// `Origin` only if this flag is `true`. Default `false` (fail-closed).
     #[serde(default)]
-    pub explicit: Vec<String>,
+    pub allow_any_origin: bool,
     /// Methods advertised in `Access-Control-Allow-Methods` for preflight
     /// responses. Empty falls back to echoing the request's
     /// `Access-Control-Request-Method`.
@@ -49,8 +54,7 @@ pub struct CorsConfig {
     /// Whether to emit `Access-Control-Allow-Credentials: true`.
     pub allow_credentials: bool,
     /// Honour the Private Network Access (PNA) preflight by emitting
-    /// `Access-Control-Allow-Private-Network: true` when requested. Required
-    /// for browsers that target a public origin from a private/local network.
+    /// `Access-Control-Allow-Private-Network: true` when requested.
     #[serde(default)]
     pub allow_private_network: bool,
 }
@@ -88,8 +92,10 @@ impl Default for CorsConfig {
     fn default() -> Self {
         Self {
             policy: CorsPolicyKind::Reflect,
-            allowlist: Vec::new(),
-            explicit: Vec::new(),
+            origins: Vec::new(),
+            // Fail-closed: operators must set `allow_any_origin = true` or
+            // populate `origins` for cross-origin reflection.
+            allow_any_origin: false,
             allowed_methods: default_allowed_methods(),
             allowed_headers: default_allowed_headers(),
             exposed_headers: default_exposed_headers(),

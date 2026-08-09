@@ -7,6 +7,7 @@ use std::time::Instant;
 use axum::body::Body as AxumBody;
 use axum::extract::{ConnectInfo, State};
 use axum::response::Response;
+use corx_core::config::PreflightMode;
 use corx_core::proxy::{self, InboundContext, TargetUrl, is_preflight};
 use http::{HeaderMap, HeaderValue, Request, header};
 use http_body_util::BodyExt as _;
@@ -72,9 +73,21 @@ async fn serve(
 ) -> Result<Response, ServerError> {
     let policies = state.build.policies();
 
-    // CORS preflight short-circuit (no guards: preflights cannot carry the
-    // information the guards need and browsers cache them via max-age).
+    // CORS preflight: by default runs the same origin (and optional rate)
+    // guards as real traffic so blacklisted origins cannot harvest 204s
+    // and OPTIONS cannot bypass the limiter. Set
+    // `security.preflight.mode = "open"` for classic cors-anywhere behaviour.
     if is_preflight(&request) {
+        let preflight = &policies.config.security.preflight;
+        if preflight.mode == PreflightMode::Enforce {
+            policies.guard.check_origin(&request)?;
+            if preflight.rate_limit {
+                let target_host = proxy::extract_target(request.uri()).ok().map(|t| t.host);
+                policies
+                    .guard
+                    .check_rate(&request, client_ip, target_host.as_deref())?;
+            }
+        }
         let response = proxy::build_preflight_response(&request, policies.cors.as_ref());
         let (parts, body) = response.into_parts();
         let axum_body = AxumBody::new(body.map_err(|never| match never {}));
@@ -86,11 +99,15 @@ async fn serve(
 
     // Extract and validate the upstream target URL.
     let target = proxy::extract_target(request.uri())?;
+    policies.target_policy.check(&target)?;
 
     // Stage 2: multi-dimensional rate limiting now that we know the target.
     policies
         .guard
-        .check_rate(&request, client_ip, &target.host)?;
+        .check_rate(&request, client_ip, Some(target.host.as_str()))?;
+
+    // Stage 3: per-host circuit breaker.
+    policies.circuit.check(&target.host)?;
 
     drop(policies);
     execute_proxy(state, request, target, client_ip).await
@@ -146,21 +163,45 @@ async fn execute_proxy(
     parts.uri = target.to_uri()?;
     let outbound = Request::from_parts(parts, axum_to_upstream_body(body));
 
+    let host = target.host.clone();
+    let count_5xx = policies.circuit.count_5xx();
+
     let upstream_started = Instant::now();
     let upstream_response = policies.upstream.execute(outbound).await;
     let upstream_elapsed = upstream_started.elapsed().as_secs_f64();
 
-    let response = upstream_response.inspect_err(|error| {
-        let kind = error.kind();
-        metrics::histogram!(stats::UPSTREAM_DURATION, "status" => kind.as_str())
+    let response = match upstream_response {
+        Ok(response) => {
+            if count_5xx && response.status().is_server_error() {
+                policies.circuit.record_failure(&host);
+            } else {
+                policies.circuit.record_success(&host);
+            }
+            metrics::histogram!(
+                stats::UPSTREAM_DURATION,
+                "status" => response.status().as_u16().to_string()
+            )
             .record(upstream_elapsed);
-    })?;
-
-    metrics::histogram!(
-        stats::UPSTREAM_DURATION,
-        "status" => response.status().as_u16().to_string()
-    )
-    .record(upstream_elapsed);
+            response
+        }
+        Err(error) => {
+            // Transport / upstream failures trip the breaker; client policy
+            // errors (SSRF, invalid URL) are not host health signals.
+            if matches!(
+                error.kind(),
+                corx_core::error::ErrorKind::UpstreamUnreachable
+                    | corx_core::error::ErrorKind::UpstreamTimeout
+                    | corx_core::error::ErrorKind::TlsFailure
+                    | corx_core::error::ErrorKind::DnsFailure
+            ) {
+                policies.circuit.record_failure(&host);
+            }
+            let kind = error.kind();
+            metrics::histogram!(stats::UPSTREAM_DURATION, "status" => kind.as_str())
+                .record(upstream_elapsed);
+            return Err(error.into());
+        }
+    };
 
     Ok(shape_response(response, &state, &target, &inbound_headers))
 }

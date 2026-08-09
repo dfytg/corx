@@ -42,28 +42,7 @@ pub fn build_server_config(cfg: &TlsConfig) -> anyhow::Result<Arc<ServerConfig>>
 
     let builder = ServerConfig::builder();
 
-    let mut server_config = match (&cfg.client_ca_path, cfg!(feature = "mtls")) {
-        (Some(_path), false) => {
-            anyhow::bail!(
-                "tls.client_ca_path is set but the binary was built without the `mtls` feature"
-            );
-        }
-        #[cfg(feature = "mtls")]
-        (Some(path), true) => {
-            let roots = load_client_roots(path)?;
-            let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-                .build()
-                .map_err(|err| anyhow::anyhow!("building mTLS verifier failed: {err}"))?;
-            builder
-                .with_client_cert_verifier(verifier)
-                .with_single_cert(cert_chain, key)
-                .map_err(|err| anyhow::anyhow!("with_single_cert failed: {err}"))?
-        }
-        (None, _) => builder
-            .with_no_client_auth()
-            .with_single_cert(cert_chain, key)
-            .map_err(|err| anyhow::anyhow!("with_single_cert failed: {err}"))?,
-    };
+    let mut server_config = build_server_config_inner(builder, cfg, cert_chain, key)?;
 
     server_config.alpn_protocols = cfg
         .alpn_protocols
@@ -72,6 +51,43 @@ pub fn build_server_config(cfg: &TlsConfig) -> anyhow::Result<Arc<ServerConfig>>
         .collect();
 
     Ok(Arc::new(server_config))
+}
+
+fn build_server_config_inner(
+    builder: rustls::ConfigBuilder<ServerConfig, rustls::WantsVerifier>,
+    cfg: &TlsConfig,
+    cert_chain: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+) -> anyhow::Result<ServerConfig> {
+    match cfg.client_ca_path.as_ref() {
+        Some(path) => {
+            #[cfg(feature = "mtls")]
+            {
+                let roots = load_client_roots(path)?;
+                let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+                    .build()
+                    .map_err(|err| anyhow::anyhow!("building mTLS verifier failed: {err}"))?;
+                builder
+                    .with_client_cert_verifier(verifier)
+                    .with_single_cert(cert_chain, key)
+                    .map_err(|err| anyhow::anyhow!("with_single_cert failed: {err}"))
+            }
+            #[cfg(not(feature = "mtls"))]
+            {
+                let _ = path;
+                let _ = builder;
+                let _ = cert_chain;
+                let _ = key;
+                anyhow::bail!(
+                    "tls.client_ca_path is set but the binary was built without the `mtls` feature"
+                )
+            }
+        }
+        None => builder
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, key)
+            .map_err(|err| anyhow::anyhow!("with_single_cert failed: {err}")),
+    }
 }
 
 #[cfg(feature = "mtls")]
@@ -127,7 +143,7 @@ where
     let server_config = build_server_config(tls_cfg)?;
     let rustls = RustlsConfig::from_config(server_config);
 
-    let handle = Handle::new();
+    let handle = Handle::<SocketAddr>::new();
     spawn_shutdown_listener(handle.clone(), cfg.graceful_shutdown, shutdown);
 
     tracing::info!(address = %cfg.bind, "corx listening (tls)");
@@ -140,7 +156,7 @@ where
     Ok(())
 }
 
-fn spawn_shutdown_listener<F>(handle: Handle, grace: std::time::Duration, shutdown: F)
+fn spawn_shutdown_listener<F>(handle: Handle<SocketAddr>, grace: std::time::Duration, shutdown: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {

@@ -28,7 +28,9 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 bytes = { workspace = true }
 
-tower = { workspace = true }
+# Minimal Service trait for hyper's custom DNS resolver — not the full tower stack.
+tower-service = { workspace = true }
+dashmap = { workspace = true }
 
 rustls = { workspace = true }
 rustls-platform-verifier = { workspace = true }

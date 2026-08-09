@@ -6,6 +6,21 @@ use serde::{Deserialize, Serialize};
 
 const MIB: u64 = 1024 * 1024;
 
+/// How upstream 3xx responses are handled.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum RedirectPolicy {
+    /// Follow redirects in-proxy (up to [`LimitsConfig::max_redirects`]),
+    /// re-validating SSRF on every hop. **Default.**
+    #[default]
+    Follow,
+    /// Do not follow; surface a proxy error instead of leaking Location.
+    Block,
+    /// Return the 3xx to the client with `Location` rewritten to the proxy
+    /// path-prefix form (cors-anywhere style). Does not follow.
+    Rewrite,
+}
+
 /// Size- and time-based limits applied to every request.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -20,12 +35,14 @@ pub struct LimitsConfig {
     /// Timeout for establishing a TCP connection to the upstream.
     #[serde(with = "humantime_serde")]
     pub connect_timeout: Duration,
-    /// Maximum number of redirects followed per request.
+    /// Maximum number of redirects followed per request (`follow` policy).
     pub max_redirects: u8,
-    /// Allow `https → http` redirect downgrades. Defaults to `false` to keep
-    /// transport security from silently weakening across hops.
+    /// Allow `https → http` redirect downgrades. Defaults to `false`.
     #[serde(default)]
     pub allow_https_to_http_downgrade: bool,
+    /// Redirect handling policy.
+    #[serde(default)]
+    pub redirect_policy: RedirectPolicy,
 }
 
 impl Default for LimitsConfig {
@@ -37,6 +54,7 @@ impl Default for LimitsConfig {
             connect_timeout: Duration::from_secs(10),
             max_redirects: 5,
             allow_https_to_http_downgrade: false,
+            redirect_policy: RedirectPolicy::Follow,
         }
     }
 }

@@ -94,6 +94,12 @@ fn make_stack(mutator: impl FnOnce(&mut Config)) -> (axum::Router, MockServer) {
         .ssrf
         .extra_allowed_cidrs
         .push("127.0.0.0/8".parse().unwrap());
+    // Tests expect reflect-any CORS (cors-anywhere style); production
+    // defaults are fail-closed (`allow_any_origin = false`).
+    config.cors.allow_any_origin = true;
+    // Circuit breaker would trip under tight unit failure bursts; keep on
+    // but with a high threshold so happy-path tests are not flaky.
+    config.circuit_breaker.failure_threshold = 10_000;
 
     mutator(&mut config);
 
@@ -233,6 +239,123 @@ async fn origin_blacklist_rejects_listed_origin() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn origin_blacklist_rejects_preflight_by_default() {
+    let (router, mock) = make_stack(|cfg| {
+        cfg.security
+            .origin_blacklist
+            .push("https://blocked.example.com".into());
+    });
+    let response = router
+        .oneshot(with_peer(
+            Request::builder()
+                .method("OPTIONS")
+                .uri(upstream_url(&mock, "/x"))
+                .header(header::ORIGIN, "https://blocked.example.com")
+                .header("access-control-request-method", "GET"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "preflight must not bypass origin guards when security.preflight.mode=enforce"
+    );
+}
+
+#[tokio::test]
+async fn preflight_open_mode_skips_origin_guard() {
+    use corx_core::config::PreflightMode;
+    let (router, mock) = make_stack(|cfg| {
+        cfg.security
+            .origin_blacklist
+            .push("https://blocked.example.com".into());
+        cfg.security.preflight.mode = PreflightMode::Open;
+    });
+    let response = router
+        .oneshot(with_peer(
+            Request::builder()
+                .method("OPTIONS")
+                .uri(upstream_url(&mock, "/x"))
+                .header(header::ORIGIN, "https://blocked.example.com")
+                .header("access-control-request-method", "GET"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn oversized_headers_return_431() {
+    let (router, mock) = make_stack(|cfg| {
+        cfg.limits.max_request_header_bytes = 64;
+    });
+    let huge = "x".repeat(200);
+    let response = router
+        .oneshot(with_peer(
+            Request::builder()
+                .uri(upstream_url(&mock, "/x"))
+                .header("x-big", huge),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE
+    );
+}
+
+#[tokio::test]
+async fn target_allowlist_rejects_other_hosts() {
+    use corx_core::config::TargetMode;
+    let (router, mock) = make_stack(|cfg| {
+        cfg.target.mode = TargetMode::Allowlist;
+        cfg.target.hosts = vec!["allowed.example".into()];
+    });
+    let response = router
+        .oneshot(with_peer(Request::builder().uri(upstream_url(&mock, "/x"))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn bearer_auth_rejects_without_token() {
+    use corx_core::config::AuthMode;
+    let (router, mock) = make_stack(|cfg| {
+        cfg.security.auth.mode = AuthMode::Bearer;
+        cfg.security.auth.bearer_tokens = vec!["s3cret".into()];
+    });
+    let response = router
+        .oneshot(with_peer(Request::builder().uri(upstream_url(&mock, "/x"))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn bearer_auth_accepts_valid_token() {
+    use corx_core::config::AuthMode;
+    let (router, mock) = make_stack(|cfg| {
+        cfg.security.auth.mode = AuthMode::Bearer;
+        cfg.security.auth.bearer_tokens = vec!["s3cret".into()];
+    });
+    Mock::given(method("GET"))
+        .and(path("/ok"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+        .mount(&mock)
+        .await;
+    let response = router
+        .oneshot(with_peer(
+            Request::builder()
+                .uri(upstream_url(&mock, "/ok"))
+                .header(header::AUTHORIZATION, "Bearer s3cret"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

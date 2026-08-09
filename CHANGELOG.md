@@ -13,9 +13,46 @@ binary CLI surface.
 
 ### Added
 
-### Changed
+- `[security.preflight]` — `mode = "enforce"|"open"` (default `enforce`) and
+  `rate_limit` (default `true`) so preflights participate in origin/rate
+  guards by default.
+- `[security.auth]` — optional `bearer` shared-secret authentication.
+- `security.require_client_binding` — hard-fail startup without origin
+  whitelist, bearer auth, or mTLS.
+- `[target]` — host/scheme admission (`any_public` | `allowlist` | `denylist`).
+- `[circuit_breaker]` — process-local per-host circuit breaker.
+- `limits.redirect_policy` — `follow` | `block` | `rewrite`.
+- `cors.origins` + `cors.allow_any_origin` (unified origin list).
+
+### Changed (BREAKING)
+
+- Cleartext listeners honour `server.graceful_shutdown` with a force-abort
+  deadline after SIGTERM/Ctrl+C (previously only the TLS path used the
+  duration).
+- Default Helm chart `config` aligned with `corx-core` serde shapes.
+- CORS: removed `allowlist` / `explicit` fields; use `origins` +
+  `allow_any_origin` (default `false` — fail-closed reflection).
+- `corx-core` depends on `tower-service` only (not full `tower`).
+- **Workspace layout:** `corx` is now the **umbrella library**; the binary
+  lives in package `corx-cli` (binary name still `corx`). Embedders should
+  depend on `corx`. Run with `cargo run -p corx-cli`.
+- Dependency floor raised across the workspace (hyper 1.11, tokio 1.53,
+  governor 0.10, metrics-exporter-prometheus 0.18, OpenTelemetry 0.30
+  family, axum-server 0.8, rustls-platform-verifier 0.6, …). See
+  `Cargo.toml` `[workspace.dependencies]`.
+- `Upstream::new` is now fallible (platform TLS verifier load).
 
 ### Fixed
+
+- `limits.max_request_header_bytes` is enforced (`431`).
+- Preflight no longer bypasses origin blacklist / whitelist when
+  `security.preflight.mode = "enforce"`.
+
+### Removed
+
+- Placeholder WebSocket metrics and related documentation (capability was
+  never implemented).
+- CORS config fields `allowlist` and `explicit`.
 
 ## [0.2.0] -- enterprise upgrade
 

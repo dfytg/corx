@@ -1,6 +1,11 @@
 [workspace]
-members = ["crates/corx-core", "crates/corx-server", "crates/corx"]
-default-members = ["crates/corx"]
+members = [
+    "crates/corx-core",
+    "crates/corx-server",
+    "crates/corx",
+    "crates/corx-cli",
+]
+default-members = ["crates/corx-cli"]
 resolver = "3"
 
 [workspace.package]
@@ -18,10 +23,11 @@ categories = ["network-programming"]
 # Internal crates
 corx-core = { path = "crates/corx-core", version = "0.2.0" }
 corx-server = { path = "crates/corx-server", version = "0.2.0" }
+corx = { path = "crates/corx", version = "0.2.0" }
 
 # HTTP core
-hyper = { version = "1.6", features = ["http1", "http2", "server", "client"] }
-hyper-util = { version = "0.1", features = [
+hyper = { version = "1.11", features = ["http1", "http2", "server", "client"] }
+hyper-util = { version = "0.1.20", features = [
     "tokio",
     "server-auto",
     "server-graceful",
@@ -29,13 +35,13 @@ hyper-util = { version = "0.1", features = [
     "http1",
     "http2",
 ] }
-http = "1.2"
+http = "1.5"
 http-body = "1.0"
-http-body-util = "0.1"
-bytes = "1.10"
+http-body-util = "0.1.4"
+bytes = "1.12"
 
 # Web framework (thin layer over hyper)
-axum = { version = "0.8", default-features = false, features = [
+axum = { version = "0.8.9", default-features = false, features = [
     "http1",
     "http2",
     "tokio",
@@ -44,20 +50,21 @@ axum = { version = "0.8", default-features = false, features = [
     "query",
     "json",
 ] }
-axum-server = { version = "0.7", default-features = false, features = [
+axum-server = { version = "0.8", default-features = false, features = [
     "tls-rustls-no-provider",
 ] }
-tower = { version = "0.5", features = ["util", "timeout", "load-shed"] }
-tower-http = { version = "0.6", features = [
+tower = { version = "0.5.3", features = ["util", "timeout", "load-shed"] }
+tower-http = { version = "0.6.8", features = [
     "trace",
     "limit",
     "timeout",
     "set-header",
     "catch-panic",
 ] }
+tower-service = "0.3.3"
 
 # Async runtime
-tokio = { version = "1.44", features = [
+tokio = { version = "1.53", features = [
     "rt-multi-thread",
     "net",
     "sync",
@@ -66,21 +73,22 @@ tokio = { version = "1.44", features = [
     "time",
     "fs",
 ] }
-futures = { version = "0.3", default-features = false, features = ["std"] }
-pin-project-lite = "0.2"
+futures = { version = "0.3.33", default-features = false, features = ["std"] }
+pin-project-lite = "0.2.17"
 
 # TLS (client side for outbound HTTPS; server TLS is gated by feature `tls`)
-rustls = { version = "0.23", default-features = false, features = [
+# Stay on the 0.23 line: 0.24 is not a stable release.
+rustls = { version = "0.23.40", default-features = false, features = [
     "std",
     "tls12",
     "ring",
 ] }
-tokio-rustls = { version = "0.26", default-features = false, features = [
+tokio-rustls = { version = "0.26.4", default-features = false, features = [
     "tls12",
     "ring",
 ] }
-rustls-platform-verifier = "0.5"
-hyper-rustls = { version = "0.27", default-features = false, features = [
+rustls-platform-verifier = "0.6"
+hyper-rustls = { version = "0.27.9", default-features = false, features = [
     "http1",
     "http2",
     "ring",
@@ -90,24 +98,26 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
 rustls-pemfile = "2.2"
 
 # DNS (pure Rust, with cache)
-hickory-resolver = { version = "0.24", default-features = false, features = [
+# 0.25/0.26 change public APIs; upgrade in a dedicated PR after resolver adapter work.
+hickory-resolver = { version = "0.24.4", default-features = false, features = [
     "tokio-runtime",
     "system-config",
 ] }
 
 # URL / IP / IDN
-url = "2.5"
-ipnet = "2.10"
-idna = "1.0"
-percent-encoding = "2.3"
+url = "2.5.8"
+ipnet = "2.12"
+idna = "1.1"
+percent-encoding = "2.3.2"
 
 # Concurrency data structures
-foldhash = "0.1"
-arc-swap = "1.7"
+foldhash = "0.1.5"
+arc-swap = "1.9"
+# dashmap 7 is still RC; stay on 6.x for production.
 dashmap = "6.1"
 
 # Rate limit (GCRA, lock-free hot path)
-governor = { version = "0.8", default-features = false, features = [
+governor = { version = "0.10", default-features = false, features = [
     "std",
     "dashmap",
     "quanta",
@@ -115,11 +125,11 @@ governor = { version = "0.8", default-features = false, features = [
 nonzero_ext = "0.3"
 
 # Regex for unlimited-host allowlists
-regex = "1.11"
+regex = "1.13"
 
 # Observability
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = [
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = [
     "std",
     "fmt",
     "json",
@@ -127,34 +137,36 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "env-filter",
     "registry",
 ] }
-metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.16", default-features = false, features = [
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = [
     "http-listener",
 ] }
-opentelemetry = { version = "0.27", default-features = false, features = [
+# OTel crate set is upgraded together (API surface is tightly coupled).
+opentelemetry = { version = "0.30", default-features = false, features = [
     "trace",
 ] }
-opentelemetry_sdk = { version = "0.27", default-features = false, features = [
+opentelemetry_sdk = { version = "0.30", default-features = false, features = [
     "trace",
     "rt-tokio",
 ] }
-opentelemetry-otlp = { version = "0.27", default-features = false, features = [
+opentelemetry-otlp = { version = "0.30", default-features = false, features = [
     "trace",
     "grpc-tonic",
     "http-proto",
 ] }
-tracing-opentelemetry = { version = "0.28", default-features = false }
+tracing-opentelemetry = { version = "0.31", default-features = false }
 
 # Config / CLI
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
-figment = { version = "0.10", features = ["toml", "env"] }
-clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
-humantime-serde = "1.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# toml 1.x is a different crate lineage; figment still pins the 0.8 series.
+toml = { version = "0.8.23", default-features = false, features = ["parse", "display"] }
+figment = { version = "0.10.19", features = ["toml", "env"] }
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+humantime-serde = "1.1.1"
 
 # Identifiers
-uuid = { version = "1.11", default-features = false, features = [
+uuid = { version = "1.24", default-features = false, features = [
     "std",
     "v7",
     "rng",
@@ -163,12 +175,12 @@ uuid = { version = "1.11", default-features = false, features = [
 ] }
 
 # Error handling
-thiserror = "2.0"
-anyhow = "1.0"
+thiserror = "2.0.20"
+anyhow = "1.0.104"
 
 # Dev only
-wiremock = "0.6"
-criterion = { version = "0.5", default-features = false, features = [
+wiremock = "0.6.5"
+criterion = { version = "0.5.1", default-features = false, features = [
     "async_tokio",
     "html_reports",
 ] }

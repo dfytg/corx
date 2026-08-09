@@ -6,7 +6,7 @@
 //! * Inbound middleware (origin guard, multi-dimensional rate limiting,
 //!   load shedding, access log, request ID injection).
 //! * The router that wires `/` (proxy), `/livez`, `/readyz`, `/healthz`,
-//!   `/metrics` and the WebSocket upgrade path.
+//!   and `/metrics`.
 //! * TLS / mTLS / FIPS variants, gated by Cargo features.
 //! * Telemetry initialisation: structured `tracing`, Prometheus exposition
 //!   and the optional OpenTelemetry / OTLP pipeline.

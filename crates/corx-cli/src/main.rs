@@ -1,4 +1,4 @@
-//! `corx` entry point.
+//! `corx` CLI entry point (crate `corx-cli`).
 //!
 //! Responsibilities:
 //!
@@ -6,16 +6,15 @@
 //! 2. Load layered configuration.
 //! 3. Install the `rustls` default crypto provider.
 //! 4. Initialise the `tracing` subscriber and Prometheus recorder.
-//! 5. Assemble proxy dependencies.
+//! 5. Assemble proxy dependencies via the [`corx`] umbrella library.
 //! 6. Bind the HTTP listener and serve until a shutdown signal arrives.
 
 #![allow(
     unused_crate_dependencies,
     clippy::print_stdout,
     reason = "Transitive workspace dependencies pulled in via features are \
-              not directly named here; the binary only uses the \
-              corx-core / corx-server re-exports. CLI subcommands print \
-              their results to stdout by design."
+              not directly named here; the binary uses the corx umbrella \
+              re-exports. CLI subcommands print to stdout by design."
 )]
 
 mod cli;
@@ -23,10 +22,10 @@ mod cli;
 use std::path::Path;
 
 use clap::Parser as _;
-use corx_core::config::Config;
-use corx_server::config_loader;
-use corx_server::observability::{active_features, init_metrics, init_tracing};
-use corx_server::{AppState, ServerBuild, build_router, run};
+use corx::Config;
+use corx::server::config_loader;
+use corx::server::observability::{active_features, init_metrics, init_tracing};
+use corx::{AppState, ServerBuild, build_router, run};
 
 use crate::cli::{Cli, Command, DumpFormat};
 
@@ -71,7 +70,7 @@ async fn serve(config_path: Option<&Path>) -> anyhow::Result<()> {
         let owned_path = config_path.map(Path::to_path_buf);
         let reload_handle = build.hot_reload();
         tokio::spawn(async move {
-            corx_server::hot_reload::watch_sighup(owned_path, reload_handle).await;
+            corx::server::hot_reload::watch_sighup(owned_path, reload_handle).await;
         });
     }
 
@@ -109,8 +108,6 @@ fn render_toml(config: &Config) -> anyhow::Result<String> {
 }
 
 fn print_version() {
-    // `std::env::consts::OS` is the host OS at compile time; sufficient
-    // for an operator-facing one-line build identity.
     println!(
         "corx {version} ({os}/{arch}) features={features}",
         version = env!("CARGO_PKG_VERSION"),

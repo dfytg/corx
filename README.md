@@ -1,4 +1,4 @@
-# corx
+# CORX
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]
@@ -20,8 +20,6 @@
 **High-performance CORS forwarding proxy written in Rust — one binary streams any HTTP(S) target, synthesises browser CORS headers, SSRF-safe by construction.**
 
 `corx` sits between browsers and upstream APIs that omit CORS. Path-prefix URL semantics match the classic [cors-anywhere](https://github.com/Rob--W/cors-anywhere) pattern (`/https://api.example.com/...`), while the hot path is zero-copy streaming on hyper 1.x + axum 0.8 + tokio: bodies are forwarded chunk-by-chunk, connections are pooled, outbound TLS and DNS are pure Rust, and every resolved address is vetted by an SSRF guard *before* the TCP connect.
-
-> **See also** the umbrella crate [`corx`](https://docs.rs/corx) for embedding (`corx-core` engine + `corx-server` binding). The CLI package is `corx-cli` (binary name `corx`).
 
 ## Quick Start
 
